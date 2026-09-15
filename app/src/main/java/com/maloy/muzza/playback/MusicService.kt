@@ -45,6 +45,7 @@ import androidx.media3.common.Timeline
 import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR
@@ -1200,6 +1201,11 @@ class MusicService : MediaLibraryService(),
         ) {
             return
         }
+        val mediaId = player.currentMediaItem?.mediaId
+        if (mediaId != null && error.hasHttpStatus(403)) {
+            Timber.tag(TAG).i("CDN 403 for $mediaId — marking WEB_REMIX failed to force fallback clients")
+            YTPlayerUtils.markWebRemixFailed(mediaId)
+        }
         if (dataStore.get(AutoSkipNextOnErrorKey, false) &&
             isInternetAvailable(this) &&
             player.hasNextMediaItem()
@@ -1209,6 +1215,17 @@ class MusicService : MediaLibraryService(),
             player.playWhenReady = true
             discordUpdateJob?.cancel()
         }
+    }
+
+    private fun PlaybackException.hasHttpStatus(status: Int): Boolean {
+        var cause: Throwable? = this
+        while (cause != null) {
+            if (cause is HttpDataSource.InvalidResponseCodeException && cause.responseCode == status) {
+                return true
+            }
+            cause = cause.cause
+        }
+        return false
     }
 
     /**
