@@ -43,6 +43,25 @@ fun PlaybackError(
             else
                 MaterialTheme.colorScheme.onPrimary
     }
+    val unknownError = stringResource(R.string.error_unknown)
+    val errorText = remember(error, unknownError) {
+        val deepestCauseMessage = generateSequence(error as Throwable?) { it.cause }
+            .mapNotNull { throwable -> throwable.message?.takeIf { message -> message.isNotBlank() } }
+            .lastOrNull()
+        buildString {
+            append(error.errorCodeName)
+            error.message?.takeIf { it.isNotBlank() }?.let {
+                if (isNotEmpty()) append(": ")
+                append(it)
+            }
+            deepestCauseMessage
+                ?.takeIf { it != error.message && it != error.errorCodeName }
+                ?.let {
+                    if (isNotEmpty()) append(" · ")
+                    append(it)
+                }
+        }.ifBlank { unknownError }
+    }
     Row(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -59,7 +78,7 @@ fun PlaybackError(
         )
 
         Text(
-            text = error.cause?.cause?.message ?: stringResource(R.string.error_unknown),
+            text = errorText,
             color = textColor,
             style = MaterialTheme.typography.bodyMedium
         )
