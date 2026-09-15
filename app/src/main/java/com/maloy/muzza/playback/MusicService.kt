@@ -45,6 +45,7 @@ import androidx.media3.common.Timeline
 import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR
@@ -219,6 +220,10 @@ class MusicService : MediaLibraryService(),
     var queueTitle: String? = null
 
     private var consecutivePlaybackErr = 0
+
+    // Media ids already self-healed after a cache position-out-of-range error, so a persistently
+    // failing item can't loop (clear cached resource -> retry -> fail -> clear ...).
+    private val cacheRecoveredMediaIds = mutableSetOf<String>()
 
     val currentMediaMetadata = MutableStateFlow<MediaMetadata?>(null)
     private val currentSong = currentMediaMetadata.flatMapLatest { mediaMetadata ->
@@ -1074,6 +1079,8 @@ class MusicService : MediaLibraryService(),
 
         if (!isCrossfading) {
             trackedSongs.clear()
+            // Allow a fresh cache self-heal attempt for the newly selected track.
+            cacheRecoveredMediaIds.clear()
         }
 
         if (consecutivePlaybackErr > 0) {
@@ -1189,6 +1196,16 @@ class MusicService : MediaLibraryService(),
     }
 
     override fun onPlayerError(error: PlaybackException) {
+        if (error.errorCode == PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE &&
+            recoverFromStaleCache(error)
+        ) {
+            return
+        }
+        val mediaId = player.currentMediaItem?.mediaId
+        if (mediaId != null && error.hasHttpStatus(403)) {
+            Timber.tag(TAG).i("CDN 403 for $mediaId — marking WEB_REMIX failed to force fallback clients")
+            YTPlayerUtils.markWebRemixFailed(mediaId)
+        }
         if (dataStore.get(AutoSkipNextOnErrorKey, false) &&
             isInternetAvailable(this) &&
             player.hasNextMediaItem()
@@ -1200,12 +1217,71 @@ class MusicService : MediaLibraryService(),
         }
     }
 
+    private fun PlaybackException.hasHttpStatus(status: Int): Boolean {
+        var cause: Throwable? = this
+        while (cause != null) {
+            if (cause is HttpDataSource.InvalidResponseCodeException && cause.responseCode == status) {
+                return true
+            }
+            cause = cause.cause
+        }
+        return false
+    }
+
+    /**
+     * A media cache can record a content length for a song that is shorter than the song itself
+     * (e.g. after a truncated write), after which media3's CacheDataSource.open() throws
+     * ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE for every request/seek past that point — instantly
+     * and without touching the network. The bad length is persisted in the SimpleCache database
+     * under filesDir, so neither an app restart nor Android's "clear cache" removes it.
+     *
+     * The only fix is to drop the cached resource for the affected song so the entry (and its wrong
+     * content length) is rebuilt from scratch. Returns true when a retry was scheduled.
+     */
+    private fun recoverFromStaleCache(error: PlaybackException): Boolean {
+        val mediaItem = player.currentMediaItem ?: return false
+        val mediaId = mediaItem.mediaId
+        if (!cacheRecoveredMediaIds.add(mediaId)) {
+            Timber.tag(TAG).w(
+                "Stale cache (${error.errorCodeName}) recurred for $mediaId after recovery; not retrying again"
+            )
+            return false
+        }
+        val index = player.currentMediaItemIndex
+        val positionMs = player.currentPosition
+        val playWhenReady = player.playWhenReady
+        Timber.tag(TAG).w(
+            "Stale cache content length for $mediaId at ${positionMs}ms — " +
+                "clearing cached resource and retrying"
+        )
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { playerCache.removeResource(mediaId) }
+                    .onFailure { Timber.tag(TAG).w(it, "playerCache.removeResource($mediaId) failed") }
+                runCatching { downloadCache.removeResource(mediaId) }
+                    .onFailure { Timber.tag(TAG).w(it, "downloadCache.removeResource($mediaId) failed") }
+            }
+            if (isActive) {
+                player.seekTo(index, positionMs)
+                player.prepare()
+                player.playWhenReady = playWhenReady
+            }
+        }
+        return true
+    }
+
     private fun createCacheDataSource(): CacheDataSource.Factory =
         CacheDataSource.Factory()
             .setCache(downloadCache)
             .setUpstreamDataSourceFactory(
                 CacheDataSource.Factory()
                     .setCache(playerCache)
+                    // Read-only during playback. If the cache is allowed to write, a stream truncated
+                    // mid-write (e.g. YouTube throttling) makes media3 persist a content length equal
+                    // to the truncation point for the song. That short length then permanently fails
+                    // every later request/seek past it (POSITION_OUT_OF_RANGE). The cache is still
+                    // populated by downloads.
+                    .setCacheWriteDataSinkFactory(null)
                     .setUpstreamDataSourceFactory(
                         DefaultDataSource.Factory(
                             this,
