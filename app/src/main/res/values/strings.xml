@@ -401,6 +401,15 @@
 
     <string name="content">Content</string>
     <string name="login">Login</string>
+    <string name="get_cookies">Get cookies</string>
+    <string name="anonymous_cookie_title">Enable playback without an account</string>
+    <string name="anonymous_cookie_description">YouTube Music blocks playback unless it sees a real session. Open YouTube Music, play any song, and wait until it starts. No sign-in needed.</string>
+    <string name="anonymous_cookie_play_instruction">Play any song and wait until it starts, then tap Save.</string>
+    <string name="anonymous_cookie_save">Save</string>
+    <string name="anonymous_cookie_success">Cookies saved. Playback is ready.</string>
+    <string name="anonymous_cookie_failed">Couldn\'t verify playback. Keep the song playing and try again.</string>
+    <string name="anonymous_cookie_status_set">Cookies set</string>
+    <string name="anonymous_cookie_status_not_set">Not set — playback may not work</string>
     <string name="token_hidden">Tap to show token</string>
     <string name="token_shown">Tap again to copy or edit</string>
     <string name="token_placeholder">Your token</string>

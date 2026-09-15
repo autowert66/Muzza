@@ -145,7 +145,9 @@ object YTPlayerUtils {
         Timber.tag(TAG).d("Content type detection (preliminary):")
         Timber.tag(TAG).d("  isUploadedTrack (from playlistId): $isUploadedTrack")
 
-        val isLoggedIn = YouTube.cookie != null
+        // Anonymous (non-account) cookies are attached to requests but do NOT grant account-only
+        // capabilities such as the WEB_CREATOR age-restricted path — those still require SAPISID.
+        val isLoggedIn = YouTube.cookie?.contains("SAPISID") == true
         Timber.tag(TAG).d("Authentication status: ${if (isLoggedIn) "LOGGED_IN" else "ANONYMOUS"}")
 
         // Get signature timestamp (same as before for normal content)
