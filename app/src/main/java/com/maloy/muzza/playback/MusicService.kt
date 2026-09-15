@@ -1259,6 +1259,12 @@ class MusicService : MediaLibraryService(),
             .setUpstreamDataSourceFactory(
                 CacheDataSource.Factory()
                     .setCache(playerCache)
+                    // Read-only during playback. If the cache is allowed to write, a stream truncated
+                    // mid-write (e.g. YouTube throttling) makes media3 persist a content length equal
+                    // to the truncation point for the song. That short length then permanently fails
+                    // every later request/seek past it (POSITION_OUT_OF_RANGE). The cache is still
+                    // populated by downloads.
+                    .setCacheWriteDataSinkFactory(null)
                     .setUpstreamDataSourceFactory(
                         DefaultDataSource.Factory(
                             this,
