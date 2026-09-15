@@ -310,6 +310,9 @@ fun NavGraphBuilder.navigationBuilder(
     composable("login") {
         LoginScreen(navController)
     }
+    composable("get_cookies") {
+        AnonymousCookieScreen(navController)
+    }
     composable("setup_wizard") {
         SetupWizard(navController)
     }

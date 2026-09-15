@@ -97,7 +97,7 @@ class App : Application(), ImageLoaderFactory {
             }
         }
 
-        if (dataStore[InnerTubeCookieKey] != null) {
+        if (!dataStore[InnerTubeCookieKey].isNullOrBlank()) {
             YouTube.useLoginForBrowse = true
         }
 
@@ -120,8 +120,9 @@ class App : Application(), ImageLoaderFactory {
                 .map { it[InnerTubeCookieKey] }
                 .distinctUntilChanged()
                 .collect { rawCookie ->
-                    val isLoggedIn: Boolean = rawCookie?.contains("SAPISID") ?: false
-                    val cookie = if (isLoggedIn) rawCookie else null
+                    // Anonymous (non-account) cookies are valid too: the player endpoint attaches
+                    // whatever cookie is present, so only discard a blank value.
+                    val cookie = rawCookie?.takeIf { it.isNotBlank() }
                     try {
                         YouTube.cookie = cookie
                     } catch (e: Exception) {

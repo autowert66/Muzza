@@ -33,7 +33,7 @@ import androidx.compose.material.icons.automirrored.rounded.NavigateNext
 import androidx.compose.material.icons.rounded.MusicVideo
 import androidx.compose.material.icons.rounded.NotInterested
 import androidx.compose.material.icons.rounded.Sync
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -44,8 +44,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,10 +59,12 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.maloy.muzza.R
 import com.maloy.muzza.constants.FirstSetupPassed
+import com.maloy.muzza.constants.InnerTubeCookieKey
 import com.maloy.muzza.ui.screens.settings.shimmerEffect
 import com.maloy.muzza.utils.rememberPreference
 
@@ -73,12 +76,21 @@ fun SetupWizard(
     val layoutDirection = LocalLayoutDirection.current
 
     val (firstSetupPassed, onFirstSetupPassedChange) = rememberPreference(FirstSetupPassed, defaultValue = false)
-
-    var position by remember {
-        mutableIntStateOf(0)
+    val (innerTubeCookie) = rememberPreference(InnerTubeCookieKey, "")
+    val hasCookies = remember(innerTubeCookie) {
+        innerTubeCookie.isNotBlank()
     }
 
-    val MAX_POS = 4
+    var position by rememberSaveable {
+        mutableStateOf(0)
+    }
+
+    val MAX_POS = 1
+
+    val finish = {
+        onFirstSetupPassedChange(true)
+        navController.navigateUp()
+    }
 
     if (position > 0) {
         BackHandler {
@@ -117,7 +129,7 @@ fun SetupWizard(
             }
 
             LinearProgressIndicator(
-                progress = { position.toFloat() / MAX_POS },
+                progress = { (position + 1).toFloat() / (MAX_POS + 1) },
                 strokeCap = StrokeCap.Butt,
                 drawStopIndicator = {},
                 modifier = Modifier
@@ -131,6 +143,8 @@ fun SetupWizard(
                 modifier = Modifier.clickable {
                     if (position < MAX_POS) {
                         position += 1
+                    } else {
+                        finish()
                     }
                 }
             ) {
@@ -141,7 +155,8 @@ fun SetupWizard(
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
                 )
                 Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.NavigateNext,
+                    imageVector = if (position < MAX_POS) Icons.AutoMirrored.Rounded.NavigateNext
+                    else Icons.AutoMirrored.Rounded.ArrowForward,
                     contentDescription = null
                 )
             }
@@ -150,18 +165,16 @@ fun SetupWizard(
 
     Scaffold(
         bottomBar = {
-            if (position > 0 && position < MAX_POS) {
-                Box(
-                    Modifier
-                        .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Bottom))
-                        .fillMaxWidth()
+            Box(
+                Modifier
+                    .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Bottom))
+                    .fillMaxWidth()
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.SpaceAround,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        horizontalArrangement = Arrangement.SpaceAround,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        navBar()
-                    }
+                    navBar()
                 }
             }
         },
@@ -312,8 +325,7 @@ fun SetupWizard(
 
                             TextButton(
                                 onClick = {
-                                    onFirstSetupPassedChange(true)
-                                    navController.navigateUp()
+                                    finish()
                                 }
                             ) {
                                 Text(
@@ -323,26 +335,64 @@ fun SetupWizard(
                             }
                         }
                     }
-                }
-            }
 
-            if (position == 0 || position == MAX_POS) {
-                FloatingActionButton(
-                    modifier = Modifier
-                        .padding(16.dp)
-                        .align(Alignment.BottomEnd),
-                    onClick = {
-                        navController.navigate("home")
-                        onFirstSetupPassedChange(true)
-                        navController.navigateUp()
+                    1 -> {
+                        CookieSetupStep(
+                            hasCookies = hasCookies,
+                            onOpenCookies = { navController.navigate("get_cookies") },
+                        )
                     }
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                        contentDescription = null
-                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CookieSetupStep(
+    hasCookies: Boolean,
+    onOpenCookies: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 32.dp, vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.security),
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(72.dp)
+        )
+        Text(
+            text = stringResource(R.string.anonymous_cookie_title),
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            text = stringResource(R.string.anonymous_cookie_description),
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            text = stringResource(
+                if (hasCookies) R.string.anonymous_cookie_status_set
+                else R.string.anonymous_cookie_status_not_set
+            ),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = if (hasCookies) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(
+            onClick = onOpenCookies,
+        ) {
+            Text(stringResource(R.string.get_cookies))
         }
     }
 }

@@ -62,6 +62,9 @@ fun AccountSettings(
     val isLoggedIn = remember(innerTubeCookie) {
         "SAPISID" in parseCookieString(innerTubeCookie)
     }
+    val hasAnonymousCookie = remember(innerTubeCookie) {
+        innerTubeCookie.isNotBlank() && !isLoggedIn
+    }
     val (ytmSync, onYtmSyncChange) = rememberPreference(YtmSyncKey, defaultValue = true)
 
     var showTokenEditor by remember {
@@ -154,6 +157,15 @@ fun AccountSettings(
                 }
             },
             onClick = { if (!isLoggedIn) navController.navigate("login") }
+        )
+        PreferenceEntry(
+            title = { Text(stringResource(R.string.get_cookies))},
+            description = stringResource(
+                if (hasAnonymousCookie) R.string.anonymous_cookie_status_set
+                else R.string.anonymous_cookie_status_not_set
+            ),
+            icon = { Icon(painterResource(R.drawable.security), null) },
+            onClick = { navController.navigate("get_cookies") },
         )
         PreferenceEntry(
             title = { Text(stringResource(R.string.login_by_token))},
