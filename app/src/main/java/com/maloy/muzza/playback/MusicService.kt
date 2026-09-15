@@ -220,6 +220,10 @@ class MusicService : MediaLibraryService(),
 
     private var consecutivePlaybackErr = 0
 
+    // Media ids already self-healed after a cache position-out-of-range error, so a persistently
+    // failing item can't loop (clear cached resource -> retry -> fail -> clear ...).
+    private val cacheRecoveredMediaIds = mutableSetOf<String>()
+
     val currentMediaMetadata = MutableStateFlow<MediaMetadata?>(null)
     private val currentSong = currentMediaMetadata.flatMapLatest { mediaMetadata ->
         database.song(mediaMetadata?.id)
@@ -1074,6 +1078,8 @@ class MusicService : MediaLibraryService(),
 
         if (!isCrossfading) {
             trackedSongs.clear()
+            // Allow a fresh cache self-heal attempt for the newly selected track.
+            cacheRecoveredMediaIds.clear()
         }
 
         if (consecutivePlaybackErr > 0) {
@@ -1189,6 +1195,11 @@ class MusicService : MediaLibraryService(),
     }
 
     override fun onPlayerError(error: PlaybackException) {
+        if (error.errorCode == PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE &&
+            recoverFromStaleCache(error)
+        ) {
+            return
+        }
         if (dataStore.get(AutoSkipNextOnErrorKey, false) &&
             isInternetAvailable(this) &&
             player.hasNextMediaItem()
@@ -1198,6 +1209,48 @@ class MusicService : MediaLibraryService(),
             player.playWhenReady = true
             discordUpdateJob?.cancel()
         }
+    }
+
+    /**
+     * A media cache can record a content length for a song that is shorter than the song itself
+     * (e.g. after a truncated write), after which media3's CacheDataSource.open() throws
+     * ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE for every request/seek past that point — instantly
+     * and without touching the network. The bad length is persisted in the SimpleCache database
+     * under filesDir, so neither an app restart nor Android's "clear cache" removes it.
+     *
+     * The only fix is to drop the cached resource for the affected song so the entry (and its wrong
+     * content length) is rebuilt from scratch. Returns true when a retry was scheduled.
+     */
+    private fun recoverFromStaleCache(error: PlaybackException): Boolean {
+        val mediaItem = player.currentMediaItem ?: return false
+        val mediaId = mediaItem.mediaId
+        if (!cacheRecoveredMediaIds.add(mediaId)) {
+            Timber.tag(TAG).w(
+                "Stale cache (${error.errorCodeName}) recurred for $mediaId after recovery; not retrying again"
+            )
+            return false
+        }
+        val index = player.currentMediaItemIndex
+        val positionMs = player.currentPosition
+        val playWhenReady = player.playWhenReady
+        Timber.tag(TAG).w(
+            "Stale cache content length for $mediaId at ${positionMs}ms — " +
+                "clearing cached resource and retrying"
+        )
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { playerCache.removeResource(mediaId) }
+                    .onFailure { Timber.tag(TAG).w(it, "playerCache.removeResource($mediaId) failed") }
+                runCatching { downloadCache.removeResource(mediaId) }
+                    .onFailure { Timber.tag(TAG).w(it, "downloadCache.removeResource($mediaId) failed") }
+            }
+            if (isActive) {
+                player.seekTo(index, positionMs)
+                player.prepare()
+                player.playWhenReady = playWhenReady
+            }
+        }
+        return true
     }
 
     private fun createCacheDataSource(): CacheDataSource.Factory =
