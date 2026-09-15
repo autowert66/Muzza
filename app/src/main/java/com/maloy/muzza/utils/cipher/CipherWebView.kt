@@ -5,6 +5,7 @@ import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CancellationException
@@ -14,6 +15,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import org.json.JSONObject
 import timber.log.Timber
 import java.io.File
 import kotlin.coroutines.Continuation
@@ -22,8 +24,6 @@ import kotlin.coroutines.resumeWithException
 
 class CipherWebView private constructor(
     context: Context,
-    private val sigInfo: FunctionNameExtractor.SigFunctionInfo?,
-    private val nFuncInfo: FunctionNameExtractor.NFunctionInfo?,
     initContinuation: Continuation<CipherWebView>,
 ) {
     private val webView = WebView(context)
@@ -76,6 +76,21 @@ class CipherWebView private constructor(
     @Volatile
     private var destroyed = false
 
+    // Init is complete only when the page finished loading AND the EJS solver reported success;
+    // evaluateJavascript is unreliable before onPageFinished.
+    @Volatile
+    private var pageFinished = false
+
+    @Volatile
+    private var solverLoaded = false
+
+    @Synchronized
+    private fun maybeResumeInit() {
+        if (pageFinished && solverLoaded) {
+            takeInitContinuation()?.resumeSafely { it.resume(this) }
+        }
+    }
+
     @Volatile
     var nFunctionAvailable: Boolean = false
         private set
@@ -94,8 +109,6 @@ class CipherWebView private constructor(
 
     init {
         Timber.tag(TAG).d("Initializing CipherWebView...")
-        Timber.tag(TAG).d("  sigInfo: name=${sigInfo?.name}, constantArg=${sigInfo?.constantArg}, hardcoded=${sigInfo?.isHardcoded}")
-        Timber.tag(TAG).d("  nFuncInfo: name=${nFuncInfo?.name}, arrayIdx=${nFuncInfo?.arrayIndex}, hardcoded=${nFuncInfo?.isHardcoded}")
 
         val settings = webView.settings
         @Suppress("SetJavaScriptEnabled")
@@ -114,9 +127,7 @@ class CipherWebView private constructor(
 
                 when (m.messageLevel()) {
                     ConsoleMessage.MessageLevel.ERROR -> {
-                        if (!msg.contains("is not defined")) {
-                            Timber.tag(TAG).e("JS ERROR: $msg at $src")
-                        }
+                        Timber.tag(TAG).e("JS ERROR: $msg at $src")
                     }
                     ConsoleMessage.MessageLevel.WARNING -> {
                         Timber.tag(TAG).w("JS WARN: $msg at $src")
@@ -130,6 +141,22 @@ class CipherWebView private constructor(
         }
 
         webView.webViewClient = object : WebViewClient() {
+            // The EJS preprocessed player assigns `globalThis.location` (its Node-shim setup); in a
+            // real browser that triggers a navigation which replaces this document and destroys the
+            // solver functions. Block every page-initiated navigation to keep the loaded document.
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                Timber.tag(TAG).d("Blocked page navigation: ${request.url}")
+                return true
+            }
+
+            // evaluateJavascript issued before the first page load finishes is silently dropped by
+            // Chromium on a detached WebView, so the instance is only handed to callers once the
+            // page is done AND the EJS solver finished its (synchronous) init.
+            override fun onPageFinished(view: WebView, url: String?) {
+                pageFinished = true
+                maybeResumeInit()
+            }
+
             // API 26+ callback (never fires below 26; the withTimeout nets in create()/
             // deobfuscateSignature()/transformN() carry recovery on providers that don't
             // deliver it, e.g. Chromium-61-era WebViews).
@@ -175,16 +202,15 @@ class CipherWebView private constructor(
     }
 
     /**
-     * Loads the already-prepared player.js (written by create() on an IO dispatcher via
-     * [buildModifiedPlayerJsImpl]) into the WebView. Only the cheap WebView work happens here
+     * Loads the solver + player source (written by create() on an IO dispatcher via
+     * [writeSolverAssets]) into the WebView. Only the cheap WebView work happens here
      * on Main.
      */
     private fun loadPreparedPlayerJs(cacheDir: File) {
-        usingHardcodedMode = sigInfo?.isHardcoded == true || nFuncInfo?.isHardcoded == true
-
         val html = buildDiscoveryHtml()
         Timber.tag(TAG).d("Discovery HTML built (${html.length} chars)")
 
+        runCatching { webView.resumeTimers() }
         webView.loadDataWithBaseURL(
             "file://${cacheDir.absolutePath}/",
             html, "text/html", "utf-8", null
@@ -194,36 +220,20 @@ class CipherWebView private constructor(
 
     private fun buildDiscoveryHtml(): String = """<!DOCTYPE html>
 <html><head><script>
-function deobfuscateSig(funcName, constantArg, obfuscatedSig, reqId) {
-    CipherBridge.logDebug("deobfuscateSig called: funcName=" + funcName + ", constantArg=" + constantArg + ", sigLen=" + obfuscatedSig.length + ", reqId=" + reqId);
-
+function deobfuscateSig(obfuscatedSig, reqId) {
     try {
         var func = window._cipherSigFunc;
-        CipherBridge.logDebug("window._cipherSigFunc type: " + typeof func + ", length: " + (func ? func.length : "N/A"));
-
         if (typeof func !== 'function') {
-            CipherBridge.onSigError(reqId, "Sig func not found on window (type: " + typeof func + ")");
+            CipherBridge.onSigError(reqId, "Sig func not available (type=" + typeof func + ")");
             return;
         }
 
-        var result;
-        if (func.length === 1) {
-            CipherBridge.logDebug("Calling wrapped sig func with just sig (func.length=1)");
-            result = func(obfuscatedSig);
-        } else if (constantArg !== null && constantArg !== undefined) {
-            CipherBridge.logDebug("Calling sig func with constantArg: " + constantArg);
-            result = func(constantArg, obfuscatedSig);
-        } else {
-            CipherBridge.logDebug("Calling sig func without constantArg");
-            result = func(obfuscatedSig);
-        }
+        var result = func(obfuscatedSig);
 
         if (result === undefined || result === null) {
-            CipherBridge.onSigError(reqId, "Function returned null/undefined");
+            CipherBridge.onSigError(reqId, "Sig func returned null/undefined");
             return;
         }
-
-        CipherBridge.logDebug("Sig result type: " + typeof result + ", length: " + String(result).length);
         CipherBridge.onSigResult(reqId, String(result));
     } catch (error) {
         CipherBridge.onSigError(reqId, error + "\n" + (error.stack || ""));
@@ -258,124 +268,48 @@ function transformN(nValue, reqId) {
     }
 }
 
-function discoverAndInit() {
-    CipherBridge.logDebug("========== DISCOVERY AND INIT ==========");
+function initSolver() {
+    try {
+        var solver = (typeof jsc === 'function') ? jsc : (jsc && jsc.default);
+        if (typeof solver !== 'function') { throw new Error("jsc solver not loaded"); }
+        if (typeof window._yt_player_source !== 'string') { throw new Error("player source not loaded"); }
 
-    var nFuncName = "";
-    var sigFuncName = "";
-    var info = "";
+        // yt-dlp EJS: parse player.js and statically extract the sig/n solver functions.
+        // Preprocess once, then materialize the functions for reuse on every challenge.
+        var out = solver({ type: "player", player: window._yt_player_source, requests: [], output_preprocessed: true });
+        if (!out || out.type !== "result" || typeof out.preprocessed_player !== "string") {
+            throw new Error("EJS preprocess failed: " + JSON.stringify(out));
+        }
 
-    if (typeof window._cipherSigFunc === 'function') {
-        sigFuncName = "exported_sig_func";
-        CipherBridge.logDebug("Signature function found on window._cipherSigFunc");
-    } else {
-        CipherBridge.logDebug("WARNING: window._cipherSigFunc not available (type=" + typeof window._cipherSigFunc + ")");
-    }
+        var resultObj = { n: null, sig: null };
+        (new Function("_result", out.preprocessed_player))(resultObj);
 
-    if (typeof window._nTransformFunc === 'function') {
-        CipherBridge.logDebug("Testing exported window._nTransformFunc...");
-        try {
+        window._cipherSigFunc = resultObj.sig;
+        window._nTransformFunc = resultObj.n;
+
+        var sigName = (typeof resultObj.sig === 'function') ? "ejs_sig" : "";
+        var nName = "";
+        if (typeof resultObj.n === 'function') {
             var testInput = "KdrqFlzJXl9EcCwlmEy";
-            var testResult = window._nTransformFunc(testInput);
-
-            CipherBridge.logDebug("N-func test input: " + testInput);
-            CipherBridge.logDebug("N-func test result: " + (testResult ? String(testResult).substring(0, 50) : "null"));
-
-            if (typeof testResult === 'string' && testResult !== testInput && testResult.length >= 5) {
-                if (/^[a-zA-Z0-9_-]+$/.test(testResult)) {
-                    nFuncName = "exported_n_func";
-                    info = "export_valid,test=" + testResult.substring(0, 20);
-                    CipherBridge.logDebug("N-function VALID: " + testResult);
-                } else {
-                    info = "export_bad_chars:" + testResult.substring(0, 20);
-                    CipherBridge.logDebug("N-function has invalid characters");
-                    window._nTransformFunc = null;
-                }
+            var testResult = resultObj.n(testInput);
+            if (typeof testResult === 'string' && testResult !== testInput && testResult.length >= 5 && /^[a-zA-Z0-9_-]+$/.test(testResult)) {
+                nName = "ejs_n";
             } else {
-                info = "export_bad_result:type=" + typeof testResult + ",eq=" + (testResult === testInput);
-                CipherBridge.logDebug("N-function test failed: " + info);
                 window._nTransformFunc = null;
             }
-        } catch(e) {
-            info = "export_threw:" + e;
-            CipherBridge.logDebug("N-function threw exception: " + e);
-            window._nTransformFunc = null;
         }
-    } else {
-        CipherBridge.logDebug("window._nTransformFunc not exported, trying brute force discovery...");
+        CipherBridge.onDiscoveryDone(sigName, nName, "ejs");
+    } catch (e) {
+        CipherBridge.onPlayerJsError((e && e.stack) ? e.stack : String(e));
+        return;
     }
-
-    if (!nFuncName) {
-        try {
-            var testInput = "T2Xw3pWQ_Wk0xbOg";
-            var keys = Object.getOwnPropertyNames(window);
-            var tested = 0;
-            var candidates = [];
-            var skipped = 0;
-
-            CipherBridge.logDebug("Brute force: scanning " + keys.length + " window properties");
-
-            for (var i = 0; i < keys.length; i++) {
-                try {
-                    var key = keys[i];
-                    if (key.startsWith("webkit") || key.startsWith("on") ||
-                        key === "CipherBridge" || key === "_cipherSigFunc" ||
-                        key === "_nTransformFunc" || key === "window" || key === "self") {
-                        skipped++;
-                        continue;
-                    }
-
-                    var fn = window[key];
-                    if (typeof fn !== 'function') continue;
-
-                    if (fn.length !== 1) continue;
-
-                    tested++;
-                    var result = fn(testInput);
-
-                    if (typeof result === 'string' && result !== testInput && result.length >= 5) {
-                        if (/^[a-zA-Z0-9_-]+$/.test(result)) {
-                            candidates.push({
-                                name: key,
-                                result: result.substring(0, 30),
-                                len: result.length
-                            });
-
-                            if (!nFuncName) {
-                                window._nTransformFunc = fn;
-                                nFuncName = key;
-                                CipherBridge.logDebug("N-function discovered: " + key + " -> " + result.substring(0, 30));
-                            }
-                        }
-                    }
-                } catch(e) {
-                }
-            }
-
-            info = "brute_force:tested=" + tested + "/skipped=" + skipped + "/total=" + keys.length;
-            if (candidates.length > 0) {
-                info += ",candidates=" + candidates.length;
-                CipherBridge.logDebug("Candidates found: " + JSON.stringify(candidates.slice(0, 5)));
-            }
-        } catch(e) {
-            info = "brute_force_error:" + e;
-            CipherBridge.logDebug("Brute force failed: " + e);
-        }
-    }
-
-    CipherBridge.logDebug("Discovery complete:");
-    CipherBridge.logDebug("  sigFuncName=" + sigFuncName);
-    CipherBridge.logDebug("  nFuncName=" + nFuncName);
-    CipherBridge.logDebug("  info=" + info);
-
-    CipherBridge.onDiscoveryDone(sigFuncName, nFuncName, info);
     CipherBridge.onPlayerJsLoaded();
 }
 </script>
-<script src="player.js"
-    onload="discoverAndInit()"
-    onerror="CipherBridge.onPlayerJsError('Failed to load player.js from file')">
-</script>
+<script src="solver.js"></script>
+<script src="player_source.js"
+    onerror="CipherBridge.onPlayerJsError('Failed to load player source from file')"></script>
+<script>initSolver();</script>
 </head><body></body></html>"""
 
     @JavascriptInterface
@@ -418,7 +352,8 @@ function discoverAndInit() {
         Timber.tag(TAG).d("discoveredNFuncName=$discoveredNFuncName")
         Timber.tag(TAG).d("usingHardcodedMode=$usingHardcodedMode")
 
-        takeInitContinuation()?.resumeSafely { it.resume(this) }
+        solverLoaded = true
+        maybeResumeInit()
     }
 
     @JavascriptInterface
@@ -434,11 +369,9 @@ function discoverAndInit() {
         Timber.tag(TAG).d("========== DEOBFUSCATE SIGNATURE ==========")
         Timber.tag(TAG).d("Input sig length: ${obfuscatedSig.length}")
         Timber.tag(TAG).d("Input sig preview: ${obfuscatedSig.take(50)}...")
-        Timber.tag(TAG).d("sigInfo: name=${sigInfo?.name}, constantArg=${sigInfo?.constantArg}")
-
-        if (sigInfo == null) {
-            Timber.tag(TAG).e("Signature function info not available")
-            throw CipherException("Signature function info not available")
+        if (!sigFunctionAvailable) {
+            Timber.tag(TAG).e("Signature function not available")
+            throw CipherException("Signature function not available")
         }
         throwIfDead()
 
@@ -447,9 +380,7 @@ function discoverAndInit() {
                 withContext(Dispatchers.Main) {
                     suspendCancellableCoroutine { cont ->
                         val requestId = sigSlot.arm(cont)
-                        val constArgJs = if (sigInfo.constantArg != null) "${sigInfo.constantArg}" else "null"
-                        val jsCall = "deobfuscateSig('${sigInfo.name}', $constArgJs, '${escapeJsString(obfuscatedSig)}', $requestId)"
-                        Timber.tag(TAG).d("Evaluating JS: ${jsCall.take(100)}...")
+                        val jsCall = "deobfuscateSig('${escapeJsString(obfuscatedSig)}', $requestId)"
                         webView.evaluateJavascript(jsCall, null)
                     }
                 }
@@ -572,6 +503,13 @@ function discoverAndInit() {
         private const val TAG = "Muzza_CipherWebView"
         private const val JS_INTERFACE = "CipherBridge"
 
+        // Loaded in order into one file: the EJS bundle takes meriyah + astring as IIFE args.
+        private val SOLVER_ASSETS = listOf(
+            "solver/meriyah.js",
+            "solver/astring.js",
+            "solver/yt.solver.core.js",
+        )
+
         // Loading + parsing ~2.8 MB player.js on a slow device takes seconds; a renderer that
         // hasn't answered after this long is dead or wedged (observed OOM kills happen ~1.2 s in).
         private const val CREATE_TIMEOUT_MS = 30_000L
@@ -581,120 +519,41 @@ function discoverAndInit() {
         private const val EVAL_TIMEOUT_MS = 15_000L
 
         /**
-         * Builds the export-injected player.js. This scans and copies a ~2.8 MB string — it MUST run
-         * off the main thread (create() calls it on Dispatchers.IO before any WebView work), or every
-         * WebView (re)build would freeze the UI thread for the duration.
+         * Writes the cipher assets the WebView needs: one concatenated JS file with meriyah +
+         * astring + the yt-dlp EJS core, and the raw player.js source exposed as the JS string
+         * global `window._yt_player_source`. This scans/copies a ~3 MB string — it MUST run off
+         * the main thread (create() calls it on Dispatchers.IO before any WebView work).
          */
-        private fun buildModifiedPlayerJsImpl(
-            playerJs: String,
-            sigInfo: FunctionNameExtractor.SigFunctionInfo?,
-            nFuncInfo: FunctionNameExtractor.NFunctionInfo?,
-        ): String {
-            val sigFuncName = sigInfo?.name
-            val nFuncName = nFuncInfo?.name
-            val nArrayIdx = nFuncInfo?.arrayIndex
-            val isHardcoded = sigInfo?.isHardcoded == true || nFuncInfo?.isHardcoded == true
-
-            Timber.tag(TAG).d("=== PREPARING PLAYER.JS FOR WEBVIEW ===")
-            Timber.tag(TAG).d("Player.js size: ${playerJs.length} chars")
-            Timber.tag(TAG).d("Export mode: ${if (isHardcoded) "HARDCODED" else "EXTRACTED"}")
-            Timber.tag(TAG).d("Sig function: $sigFuncName (constantArg=${sigInfo?.constantArg})")
-            Timber.tag(TAG).d("N function: $nFuncName (arrayIdx=$nArrayIdx)")
-
-            val exports = buildList {
-                val sigJsExpr = sigInfo?.jsExpression
-                if (sigJsExpr != null) {
-                    // Expression-based sig decipher (VM-dispatch players like 9c249f6f).
-                    // INPUT is replaced with the sig argument.
-                    val expr = sigJsExpr.replace("INPUT", "sig")
-                    Timber.tag(TAG).d("Sig: expression-based export: $expr")
-                    add("window._cipherSigFunc = function(sig) { try { return $expr; } catch(e) { return null; } };")
-                } else if (sigFuncName != null) {
-                    val sigConstArgs = sigInfo?.constantArgs
-                    val preprocessFunc = sigInfo?.preprocessFunc
-                    val preprocessArgs = sigInfo?.preprocessArgs
-
-                    if (!sigConstArgs.isNullOrEmpty() && preprocessFunc != null && !preprocessArgs.isNullOrEmpty()) {
-                        val mainArgsStr = sigConstArgs.joinToString(", ")
-                        val prepArgsStr = preprocessArgs.joinToString(", ")
-                        Timber.tag(TAG).d("Sig function needs full wrapper:")
-                        Timber.tag(TAG).d("  $sigFuncName($mainArgsStr, $preprocessFunc($prepArgsStr, sig))")
-                        add("window._cipherSigFunc = function(sig) { return $sigFuncName($mainArgsStr, $preprocessFunc($prepArgsStr, sig)); };")
-                    } else if (!sigConstArgs.isNullOrEmpty()) {
-                        val argsStr = sigConstArgs.joinToString(", ")
-                        Timber.tag(TAG).d("Sig function needs wrapper with constant args: $argsStr")
-                        add("window._cipherSigFunc = function(sig) { return $sigFuncName($argsStr, sig); };")
-                    } else if (isHardcoded) {
-                        Timber.tag(TAG).d("Will export sig function $sigFuncName in hardcoded mode (legacy)")
-                        add("window._cipherSigFunc = typeof $sigFuncName !== 'undefined' ? $sigFuncName : null;")
-                    } else {
-                        add("window._cipherSigFunc = typeof $sigFuncName !== 'undefined' ? $sigFuncName : null;")
-                    }
-                }
-                val nJsExpr = nFuncInfo?.jsExpression
-                if (nJsExpr != null) {
-                    // Expression-based n-transform (VM-dispatch players).
-                    val expr = nJsExpr.replace("INPUT", "n")
-                    Timber.tag(TAG).d("N: expression-based export: ${expr.take(80)}")
-                    add("window._nTransformFunc = function(n) { try { return $expr; } catch(e) { return n; } };")
-                } else if (nFuncName != null) {
-                    val nConstArgs = nFuncInfo?.constantArgs
-                    if (!nConstArgs.isNullOrEmpty()) {
-                        val argsStr = nConstArgs.joinToString(", ")
-                        Timber.tag(TAG).d("N-function needs wrapper with constant args: $argsStr")
-                        add("window._nTransformFunc = function(n) { return $nFuncName($argsStr, n); };")
-                    } else {
-                        val nExpr = if (nArrayIdx != null) {
-                            "$nFuncName[$nArrayIdx]"
-                        } else {
-                            nFuncName
-                        }
-                        add("window._nTransformFunc = typeof $nFuncName !== 'undefined' ? $nExpr : null;")
-                    }
+        private fun writeSolverAssets(context: Context, cacheDir: File, playerJs: String) {
+            val solverJs = buildString {
+                for (asset in SOLVER_ASSETS) {
+                    context.assets.open(asset).bufferedReader().use { append(it.readText()) }
+                    append('\n')
                 }
             }
-
-            Timber.tag(TAG).d("Export statements: ${exports.size}")
-            exports.forEachIndexed { idx, stmt ->
-                Timber.tag(TAG).v("  Export[$idx]: ${stmt.take(80)}...")
-            }
-
-            return if (exports.isNotEmpty()) {
-                val exportCode = "; " + exports.joinToString(" ")
-                val modified = playerJs.replace("})(_yt_player);", "$exportCode })(_yt_player);")
-                if (modified == playerJs) {
-                    Timber.tag(TAG).w("Export injection point '})(_yt_player);' not found, appending exports")
-                    playerJs + "\n" + exportCode
-                } else {
-                    Timber.tag(TAG).d("Exports injected into IIFE closure")
-                    modified
-                }
-            } else {
-                Timber.tag(TAG).w("No exports to inject")
-                playerJs
-            }
+            File(cacheDir, "solver.js").writeText(solverJs)
+            File(cacheDir, "player_source.js").writeText(
+                "window._yt_player_source = " + JSONObject.quote(playerJs) + ";"
+            )
+            Timber.tag(TAG).d(
+                "Solver assets written: solver.js=${solverJs.length} chars, " +
+                    "player source=${playerJs.length} chars"
+            )
         }
 
         suspend fun create(
             context: Context,
             playerJs: String,
-            sigInfo: FunctionNameExtractor.SigFunctionInfo?,
-            nFuncInfo: FunctionNameExtractor.NFunctionInfo? = null,
         ): CipherWebView {
             Timber.tag(TAG).d("=== CREATING CIPHER WEBVIEW ===")
             Timber.tag(TAG).d("playerJs size: ${playerJs.length} chars")
-            Timber.tag(TAG).d("sigInfo: $sigInfo")
-            Timber.tag(TAG).d("nFuncInfo: $nFuncInfo")
 
-            // Heavy prep (multi-MB string transform + disk write) runs on IO; only WebView
-            // construction and the load call happen on the main thread below.
+            // Heavy prep (multi-MB string write) runs on IO; only WebView construction and the
+            // load call happen on the main thread below.
             val cacheDir = withContext(Dispatchers.IO) {
-                val modifiedJs = buildModifiedPlayerJsImpl(playerJs, sigInfo, nFuncInfo)
                 val dir = File(context.cacheDir, "cipher")
                 dir.mkdirs()
-                val playerJsFile = File(dir, "player.js")
-                playerJsFile.writeText(modifiedJs)
-                Timber.tag(TAG).d("Player.js written to cache: ${playerJsFile.absolutePath} (${modifiedJs.length} chars)")
+                writeSolverAssets(context, dir, playerJs)
                 dir
             }
 
@@ -703,7 +562,7 @@ function discoverAndInit() {
                 return withTimeout(CREATE_TIMEOUT_MS) {
                     withContext(Dispatchers.Main) {
                         suspendCancellableCoroutine { cont ->
-                            val wv = CipherWebView(context, sigInfo, nFuncInfo, cont)
+                            val wv = CipherWebView(context, cont)
                             created = wv
                             wv.loadPreparedPlayerJs(cacheDir)
                         }

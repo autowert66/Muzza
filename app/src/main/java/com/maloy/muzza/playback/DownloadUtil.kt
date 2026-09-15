@@ -55,10 +55,16 @@ class DownloadUtil @Inject constructor(
                 OkHttpDataSource.Factory(
                     OkHttpClient.Builder()
                         .proxy(YouTube.proxy)
-                        .proxyAuthenticator { _, response ->
-                            response.request.newBuilder()
-                                .header("Proxy-Authorization", YouTube.proxyAuth!!)
-                                .build()
+                        .apply {
+                            // Only install the authenticator when credentials exist: OkHttp invokes it
+                            // on any 407, and force-unwrapping a null proxyAuth() crashed the process.
+                            YouTube.proxyAuth?.let { auth ->
+                                proxyAuthenticator { _, response ->
+                                    response.request.newBuilder()
+                                        .header("Proxy-Authorization", auth)
+                                        .build()
+                                }
+                            }
                         }
                         .build(),
                 ),
@@ -108,7 +114,9 @@ class DownloadUtil @Inject constructor(
             "${it}&range=0-${format.contentLength ?: 10000000}"
         }
 
-        songUrlCache[mediaId] = streamUrl to playbackData.streamExpiresInSeconds * 1000L
+        // Absolute expiry instant (was storing the raw duration, so the cache-hit check above never fired).
+        songUrlCache[mediaId] = streamUrl to
+            (System.currentTimeMillis() + playbackData.streamExpiresInSeconds * 1000L)
         dataSpec.withUri(streamUrl.toUri())
     }
     val downloadNotificationHelper = DownloadNotificationHelper(context, ExoDownloadService.CHANNEL_ID)

@@ -1287,10 +1287,17 @@ class MusicService : MediaLibraryService(),
                             this,
                             OkHttpDataSource.Factory(
                                 OkHttpClient.Builder()
-                                    .proxyAuthenticator { _, response ->
-                                        response.request.newBuilder()
-                                            .header("Proxy-Authorization", YouTube.proxyAuth!!)
-                                            .build()
+                                    .apply {
+                                        // Only install the authenticator when credentials exist: OkHttp
+                                        // invokes it on any 407, and force-unwrapping a null
+                                        // proxyAuth() crashed the process.
+                                        YouTube.proxyAuth?.let { auth ->
+                                            proxyAuthenticator { _, response ->
+                                                response.request.newBuilder()
+                                                    .header("Proxy-Authorization", auth)
+                                                    .build()
+                                            }
+                                        }
                                     }
                                     .build()
                             )
@@ -1365,6 +1372,14 @@ class MusicService : MediaLibraryService(),
             ) {
                 scope.launch(Dispatchers.IO) { recoverSong(mediaId) }
                 return@Factory dataSpec
+            }
+
+            // Reuse the already-resolved URL for this song until it expires. Without this, every
+            // cache-chunk open re-runs the whole player resolution (WEB_REMIX + PoToken), which
+            // multiplies YouTube requests and triggers its "not a bot" rate limiting on long queues.
+            songUrlCache[mediaId]?.takeIf { it.second > System.currentTimeMillis() }?.let { cached ->
+                return@Factory dataSpec.withUri(cached.first.toUri())
+                    .subrange(dataSpec.uriPositionOffset, CHUNK_LENGTH)
             }
 
             val playbackData = runBlocking(Dispatchers.IO) {

@@ -40,12 +40,6 @@ object CipherDeobfuscator {
 
     private var cipherWebView: CipherWebView? = null
 
-    // The PlayerConfigStore.configEpoch the cached WebView was built under. When the config table
-    // changes (epoch advances), the cached WebView may have been built from a missing or wrong
-    // config for the current player, so getOrCreateWebView() rebuilds it instead of trusting it for
-    // the life of the process — the staleness that previously required an app restart to recover.
-    private var builtConfigEpoch = -1
-
     // Written on the decipher coroutine (Dispatchers.IO) but read via lastUsedPlayerHash from the
     // Compose UI thread (song-details sheet), so @Volatile to publish the write across threads.
     @Volatile
@@ -309,21 +303,16 @@ object CipherDeobfuscator {
             return null
         }
 
-        // Snapshot the epoch BEFORE extracting/building. A refresh that lands on another thread
-        // during this (multi-second) build then leaves builtConfigEpoch behind the live epoch,
-        // forcing a rebuild on the next decipher instead of masking the change. Capturing the epoch
-        // AFTER the build would record a config this WebView never actually incorporated — the
-        // staleness this whole mechanism exists to prevent.
-        val epochAtStart = PlayerConfigStore.configEpoch
-        if (!forceRefresh && cipherWebView != null && builtConfigEpoch == epochAtStart) {
-            Timber.tag(TAG).d("Reusing existing CipherWebView (hash=$currentPlayerHash)")
-            return cipherWebView
+        // Reuse the cached WebView only while it was built from the SAME player.js generation.
+        // YouTube rotates player.js periodically; sig/n functions extracted from an old player
+        // mint URLs the CDN rejects, so a new hash must rebuild the WebView.
+        if (cipherWebView != null && !forceRefresh) {
+            val cached = PlayerJsFetcher.getPlayerJs(forceRefresh = false)
+            if (cached != null && cached.second == currentPlayerHash) {
+                Timber.tag(TAG).d("Reusing existing CipherWebView (hash=$currentPlayerHash)")
+                return cipherWebView
+            }
         }
-
-        // The epoch whose config this build incorporates. Defaults to the pre-build snapshot; the
-        // heal path below advances it only after a same-thread forceRefresh whose new config we
-        // re-extract and therefore HAVE incorporated (avoids a needless next rebuild).
-        var builtEpoch = epochAtStart
 
         // Close existing WebView if any
         if (cipherWebView != null) {
@@ -341,51 +330,13 @@ object CipherDeobfuscator {
         val (playerJs, hash) = result
         Timber.tag(TAG).d("Got player JS: hash=$hash, length=${playerJs.length}")
 
-        // Run full analysis for logging - pass the known hash from PlayerJsFetcher
-        Timber.tag(TAG).d("Analyzing player JS for cipher functions (knownHash=$hash)...")
-        var analysis = FunctionNameExtractor.analyzePlayerJs(playerJs, knownHash = hash)
-
-        // Mid-session self-heal: a rotated player_ias whose validated config may already be
-        // published in the remote config file. Trigger when EITHER transform is missing OR was
-        // resolved by the legacy regex heuristics (isHardcoded == false) instead of a validated
-        // config. The regexes are unanchored and can false-match anywhere in the ~2 MB player JS,
-        // returning a non-null but WRONG result; gating on null alone would let that shadow the
-        // validated config and silently break playback. forceRefresh returns true only when the
-        // hash is now in the table, so re-extraction runs exactly when it can succeed; a genuine
-        // old-style regex player with no config simply gets false back (one cooldown-gated fetch)
-        // and keeps its working regex result.
-        val sigFromConfig = analysis.sigInfo?.isHardcoded == true
-        val nFromConfig = analysis.nFuncInfo?.isHardcoded == true
-        if (!sigFromConfig || !nFromConfig) {
-            Timber.tag(TAG).w("Extraction not fully config-backed for player $hash (sigConfig=$sigFromConfig, nConfig=$nFromConfig; sig=${analysis.sigInfo != null}, n=${analysis.nFuncInfo != null}) — forcing remote config refresh")
-            val healed = PlayerConfigStore.forceRefresh(missingHash = hash)
-            Timber.tag(TAG).d("forceRefresh($hash) -> hashNowKnown=$healed")
-            if (healed) {
-                analysis = FunctionNameExtractor.analyzePlayerJs(playerJs, knownHash = hash)
-                builtEpoch = PlayerConfigStore.configEpoch
-                Timber.tag(TAG).d("Re-extracted after refresh: sigConfig=${analysis.sigInfo?.isHardcoded == true}, nConfig=${analysis.nFuncInfo?.isHardcoded == true}")
-            }
-        }
-
-        if (analysis.sigInfo == null) {
-            Timber.tag(TAG).e("Could not extract signature function info from player JS")
-            return null
-        }
-
-        if (analysis.nFuncInfo == null) {
-            Timber.tag(TAG).w("Could not extract n-function info from player JS (will try brute-force)")
-        }
-
-        Timber.tag(TAG).d("Creating CipherWebView...")
-        Timber.tag(TAG).d("  sig: ${analysis.sigInfo.name} (constantArg=${analysis.sigInfo.constantArg}, hardcoded=${analysis.sigInfo.isHardcoded})")
-        Timber.tag(TAG).d("  nFunc: ${analysis.nFuncInfo?.name}[${analysis.nFuncInfo?.arrayIndex}] (hardcoded=${analysis.nFuncInfo?.isHardcoded})")
-
-        // Create WebView
+        // The sig/n functions are extracted at runtime by the yt-dlp EJS solver inside the
+        // WebView (player.js is parsed with meriyah), so no stale per-player config lookup or
+        // regex heuristic is involved here. The WebView is built from the fetched player JS.
+        Timber.tag(TAG).d("Creating CipherWebView (EJS runtime extraction)...")
         val webView = CipherWebView.create(
             context = appContext,
             playerJs = playerJs,
-            sigInfo = analysis.sigInfo,
-            nFuncInfo = analysis.nFuncInfo,
         )
 
         Timber.tag(TAG).d("CipherWebView created successfully")
@@ -395,7 +346,6 @@ object CipherDeobfuscator {
 
         cipherWebView = webView
         currentPlayerHash = hash
-        builtConfigEpoch = builtEpoch
         return webView
     }
 
