@@ -12,7 +12,7 @@ import android.os.Looper
 import android.widget.RemoteViews
 import androidx.core.graphics.drawable.toBitmap
 import androidx.media3.common.Player
-import coil.ImageLoader
+import coil.imageLoader
 import coil.request.ImageRequest
 import com.maloy.muzza.playback.PlayerConnection
 import kotlinx.coroutines.CoroutineScope
@@ -150,7 +150,7 @@ class MusicWidget : AppWidgetProvider() {
                             val request = ImageRequest.Builder(context)
                                 .data(thumbnailUrl)
                                 .build()
-                            val drawable = ImageLoader(context).execute(request).drawable
+                            val drawable = context.imageLoader.execute(request).drawable
                             drawable?.let {
                                 views.setImageViewBitmap(R.id.widget_album_art, it.toBitmap())
                                 appWidgetManager.updateAppWidget(appWidgetId, views)

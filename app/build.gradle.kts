@@ -310,4 +310,6 @@ dependencies {
     implementation(libs.lifecycle.process)
     implementation(libs.protobuf.javalite)
     implementation(libs.protobuf.kotlin.lite)
+
+    testImplementation(libs.junit)
 }

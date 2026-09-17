@@ -42,7 +42,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import com.maloy.innertube.YouTube
@@ -86,7 +85,8 @@ fun YouTubeSongMenu(
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
     val songPlaying = mediaMetadata?.id == song.id
     val librarySong by database.song(song.id).collectAsState(initial = null)
-    val download by LocalDownloadUtil.current.getDownload(song.id).collectAsState(initial = null)
+    val downloadUtil = LocalDownloadUtil.current
+    val download by downloadUtil.getDownload(song.id).collectAsState(initial = null)
     val coroutineScope = rememberCoroutineScope()
     val artists = remember {
         song.artists.mapNotNull {
@@ -405,19 +405,11 @@ fun YouTubeSongMenu(
         DownloadListMenu(
             state = download?.state,
             onDownload = {
+                val mediaMetadata = song.toMediaMetadata()
                 database.transaction {
-                    insert(song.toMediaMetadata())
+                    insert(mediaMetadata)
                 }
-                val downloadRequest = DownloadRequest.Builder(song.id, song.id.toUri())
-                    .setCustomCacheKey(song.id)
-                    .setData(song.title.toByteArray())
-                    .build()
-                DownloadService.sendAddDownload(
-                    context,
-                    ExoDownloadService::class.java,
-                    downloadRequest,
-                    false
-                )
+                downloadUtil.download(mediaMetadata)
             },
             onRemoveDownload = {
                 DownloadService.sendRemoveDownload(

@@ -50,7 +50,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
@@ -99,7 +98,8 @@ fun SongMenu(
     val songState = database.song(originalSong.id).collectAsState(initial = originalSong)
     val song = songState.value ?: originalSong
     val songPlaying = mediaMetadata?.id == song.song.id
-    val download by LocalDownloadUtil.current.getDownload(originalSong.id)
+    val downloadUtil = LocalDownloadUtil.current
+    val download by downloadUtil.getDownload(originalSong.id)
         .collectAsState(initial = null)
     val coroutineScope = rememberCoroutineScope()
 
@@ -540,16 +540,7 @@ fun SongMenu(
             DownloadListMenu(
                 state = download?.state,
                 onDownload = {
-                    val downloadRequest = DownloadRequest.Builder(song.id, song.id.toUri())
-                        .setCustomCacheKey(song.id)
-                        .setData(song.song.title.toByteArray())
-                        .build()
-                    DownloadService.sendAddDownload(
-                        context,
-                        ExoDownloadService::class.java,
-                        downloadRequest,
-                        false
-                    )
+                    downloadUtil.download(song)
                 },
                 onRemoveDownload = {
                     DownloadService.sendRemoveDownload(

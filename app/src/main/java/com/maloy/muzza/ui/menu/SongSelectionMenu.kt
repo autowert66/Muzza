@@ -17,13 +17,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.Download.STATE_COMPLETED
 import androidx.media3.exoplayer.offline.Download.STATE_DOWNLOADING
 import androidx.media3.exoplayer.offline.Download.STATE_QUEUED
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import com.maloy.muzza.LocalDatabase
@@ -196,20 +194,7 @@ fun SongSelectionMenu(
             DownloadListMenu(
                 state = downloadState,
                 onDownload = {
-                    selection.forEach { song ->
-                        val downloadRequest =
-                            DownloadRequest
-                                .Builder(song.id, song.id.toUri())
-                                .setCustomCacheKey(song.id)
-                                .setData(song.song.title.toByteArray())
-                                .build()
-                        DownloadService.sendAddDownload(
-                            context,
-                            ExoDownloadService::class.java,
-                            downloadRequest,
-                            false,
-                        )
-                    }
+                    selection.forEach { downloadUtil.download(it) }
                 },
                 onRemoveDownload = {
                     selection.forEach { song ->

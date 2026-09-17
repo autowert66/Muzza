@@ -91,8 +91,8 @@ import androidx.media3.common.Player.REPEAT_MODE_ONE
 import androidx.media3.common.Player.STATE_ENDED
 import androidx.media3.common.Player.STATE_READY
 import androidx.navigation.NavController
-import coil.ImageLoader
 import coil.compose.AsyncImage
+import coil.imageLoader
 import coil.request.ImageRequest
 import com.maloy.muzza.LocalDatabase
 import com.maloy.muzza.LocalListenTogetherManager
@@ -237,7 +237,7 @@ fun BottomSheetPlayer(
             gradientColors = listOf(Color.Black, Color.Black)
         } else if (playerBackground == PlayerBackgroundStyle.GRADIENT) {
             withContext(Dispatchers.IO) {
-                val result = (ImageLoader(context).execute(
+                val result = (context.imageLoader.execute(
                     ImageRequest.Builder(context).data(mediaMetadata?.thumbnailUrl)
                         .allowHardware(false).build(),
                 ).drawable as? BitmapDrawable)?.bitmap?.extractGradientColors()

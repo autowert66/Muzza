@@ -49,9 +49,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import androidx.media3.exoplayer.offline.Download
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import com.maloy.innertube.YouTube
@@ -619,18 +617,7 @@ fun PlaylistMenu(
             DownloadListMenu(
                 state = downloadState,
                 onDownload = {
-                    songs.forEach { song ->
-                        val downloadRequest = DownloadRequest.Builder(song.id, song.id.toUri())
-                            .setCustomCacheKey(song.id)
-                            .setData(song.song.title.toByteArray())
-                            .build()
-                        DownloadService.sendAddDownload(
-                            context,
-                            ExoDownloadService::class.java,
-                            downloadRequest,
-                            false
-                        )
-                    }
+                    songs.forEach { downloadUtil.download(it) }
                 },
                 onRemoveDownload = {
                     showRemoveDownloadDialog = true

@@ -56,7 +56,6 @@ import androidx.media3.exoplayer.offline.Download.STATE_COMPLETED
 import androidx.media3.exoplayer.offline.Download.STATE_DOWNLOADING
 import androidx.media3.exoplayer.offline.Download.STATE_QUEUED
 import androidx.media3.exoplayer.offline.Download.STATE_STOPPED
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
@@ -477,18 +476,7 @@ fun AlbumMenu(
         DownloadListMenu(
             state = downloadState,
             onDownload = {
-                songs.forEach { song ->
-                    val downloadRequest = DownloadRequest.Builder(song.id, song.id.toUri())
-                        .setCustomCacheKey(song.id)
-                        .setData(song.song.title.toByteArray())
-                        .build()
-                    DownloadService.sendAddDownload(
-                        context,
-                        ExoDownloadService::class.java,
-                        downloadRequest,
-                        false
-                    )
-                }
+                songs.forEach { downloadUtil.download(it) }
             },
             onRemoveDownload = {
                 showRemoveDownloadDialog = true

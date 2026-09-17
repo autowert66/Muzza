@@ -19,18 +19,24 @@ import com.maloy.muzza.constants.AudioQuality
 import com.maloy.muzza.constants.AudioQualityKey
 import com.maloy.muzza.db.MusicDatabase
 import com.maloy.muzza.db.entities.FormatEntity
+import com.maloy.muzza.db.entities.Song
 import com.maloy.muzza.db.entities.SongEntity
 import com.maloy.muzza.di.DownloadCache
 import com.maloy.muzza.di.PlayerCache
 import com.maloy.muzza.models.MediaMetadata
+import com.maloy.muzza.utils.CoverStore
 import com.maloy.muzza.utils.YTPlayerUtils
+import com.maloy.muzza.utils.canonicalCoverUrl
 import com.maloy.muzza.utils.enumPreference
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import java.util.concurrent.Executor
@@ -123,19 +129,23 @@ class DownloadUtil @Inject constructor(
         )
     }
     val downloads = MutableStateFlow<Map<String, Download>>(emptyMap())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun getDownload(songId: String?): Flow<Download?> = downloads.map { it[songId] }
 
     fun download(songs: List<MediaMetadata>) {
-        songs.forEach { song -> downloadSong(song.id, song.title) }
+        songs.forEach { song -> download(song) }
     }
-    fun download(song: MediaMetadata){
-        downloadSong(song.id, song.title)
+    fun download(song: MediaMetadata) {
+        downloadSong(song.id, song.title, song.thumbnailUrl)
     }
-    fun download(song: SongEntity){
-        downloadSong(song.id, song.title)
+    fun download(song: SongEntity) {
+        downloadSong(song.id, song.title, song.thumbnailUrl)
     }
-    private fun downloadSong(id: String, title: String){
+    fun download(song: Song) {
+        download(song.song)
+    }
+    private fun downloadSong(id: String, title: String, thumbnailUrl: String?) {
         val downloadRequest = DownloadRequest.Builder(id, id.toUri())
             .setCustomCacheKey(id)
             .setData(title.toByteArray())
@@ -145,7 +155,26 @@ class DownloadUtil @Inject constructor(
             ExoDownloadService::class.java,
             downloadRequest,
             false)
+        scope.launch { CoverStore.ensure(context, thumbnailUrl) }
     }
+
+    private suspend fun ensureCoverFor(id: String) {
+        val song = database.getSongsByIds(listOf(id)).firstOrNull() ?: return
+        if (song.song.isLocal) return
+        CoverStore.ensure(context, song.song.thumbnailUrl)
+    }
+
+    private suspend fun deleteCoverFor(id: String) {
+        val song = database.getSongsByIds(listOf(id)).firstOrNull() ?: return
+        val thumbnailUrl = song.song.thumbnailUrl ?: return
+        val key = canonicalCoverUrl(thumbnailUrl)
+        val remainingIds = downloads.value.keys - id
+        val stillUsed = remainingIds.isNotEmpty() &&
+            database.getSongsByIds(remainingIds.toList())
+                .any { it.song.thumbnailUrl?.let(::canonicalCoverUrl) == key }
+        if (!stillUsed) CoverStore.delete(context, thumbnailUrl)
+    }
+
     init {
         val result = mutableMapOf<String, Download>()
         val cursor = downloadManager.downloadIndex.getDownloads()
@@ -161,8 +190,21 @@ class DownloadUtil @Inject constructor(
                             set(download.request.id, download)
                         }
                     }
+                    if (download.state == Download.STATE_COMPLETED) {
+                        scope.launch { ensureCoverFor(download.request.id) }
+                    }
+                }
+
+                override fun onDownloadRemoved(downloadManager: DownloadManager, download: Download) {
+                    downloads.update { it - download.request.id }
+                    scope.launch { deleteCoverFor(download.request.id) }
                 }
             }
         )
+        scope.launch {
+            result.values
+                .filter { it.state == Download.STATE_COMPLETED }
+                .forEach { ensureCoverFor(it.request.id) }
+        }
     }
 }

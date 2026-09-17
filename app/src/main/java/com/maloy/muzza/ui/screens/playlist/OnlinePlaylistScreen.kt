@@ -94,16 +94,15 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastSumBy
-import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.exoplayer.offline.Download
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
 import com.maloy.innertube.models.SongItem
 import com.maloy.muzza.LocalDatabase
+import com.maloy.muzza.LocalDownloadUtil
 import com.maloy.muzza.LocalPlayerAwareWindowInsets
 import com.maloy.muzza.LocalPlayerConnection
 import com.maloy.muzza.LocalSyncUtils
@@ -172,6 +171,7 @@ fun OnlinePlaylistScreen(
     val haptic = LocalHapticFeedback.current
     val menuState = LocalMenuState.current
     val database = LocalDatabase.current
+    val downloadUtil = LocalDownloadUtil.current
     val playerConnection = LocalPlayerConnection.current ?: return
     val isPlaying by playerConnection.isPlaying.collectAsState()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
@@ -597,20 +597,7 @@ fun OnlinePlaylistScreen(
                                                             }
 
                                                             songs.forEach { song ->
-                                                                val downloadRequest =
-                                                                    DownloadRequest.Builder(
-                                                                        song.id,
-                                                                        song.id.toUri()
-                                                                    )
-                                                                        .setCustomCacheKey(song.id)
-                                                                        .setData(song.title.toByteArray())
-                                                                        .build()
-                                                                DownloadService.sendAddDownload(
-                                                                    context,
-                                                                    ExoDownloadService::class.java,
-                                                                    downloadRequest,
-                                                                    false
-                                                                )
+                                                                downloadUtil.download(song.toMediaMetadata())
                                                             }
                                                         },
                                                         modifier = Modifier

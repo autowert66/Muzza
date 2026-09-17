@@ -29,6 +29,7 @@ import com.maloy.muzza.constants.VisitorDataKey
 import com.maloy.muzza.extensions.toEnum
 import com.maloy.muzza.extensions.toInetSocketAddress
 import com.maloy.muzza.utils.cipher.PlayerJsFetcher
+import com.maloy.muzza.utils.OfflineCoverInterceptor
 import com.maloy.muzza.utils.dataStore
 import com.maloy.muzza.utils.get
 import com.maloy.muzza.utils.reportException
@@ -142,7 +143,9 @@ class App : Application(), ImageLoaderFactory {
         return if (cacheSize == 0) {
             ImageLoader.Builder(this).crossfade(true).respectCacheHeaders(false)
                 .allowHardware(Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
-                .diskCachePolicy(CachePolicy.DISABLED).build()
+                .diskCachePolicy(CachePolicy.DISABLED)
+                .components { add(OfflineCoverInterceptor(this@App)) }
+                .build()
         } else {
             val maxSize = when {
                 cacheSize == -1 -> {
@@ -159,7 +162,7 @@ class App : Application(), ImageLoaderFactory {
                         .directory(cacheDir.resolve("coil"))
                         .maxSizeBytes(maxSize)
                         .build()
-                ).build()
+                ).components { add(OfflineCoverInterceptor(this@App)) }.build()
         }
     }
 }

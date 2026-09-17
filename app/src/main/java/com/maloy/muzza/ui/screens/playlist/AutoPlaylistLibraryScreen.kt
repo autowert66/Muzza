@@ -38,10 +38,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastSumBy
-import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.exoplayer.offline.Download
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import com.maloy.muzza.LocalDownloadUtil
@@ -386,22 +384,7 @@ fun AutoPlaylistLibraryScreen(
                                         else -> {
                                             Button(
                                                 onClick = {
-                                                    librarySongs.forEach { song ->
-                                                        val downloadRequest =
-                                                            DownloadRequest.Builder(
-                                                                song.song.id,
-                                                                song.song.id.toUri()
-                                                            )
-                                                                .setCustomCacheKey(song.song.id)
-                                                                .setData(song.song.title.toByteArray())
-                                                                .build()
-                                                        DownloadService.sendAddDownload(
-                                                            context,
-                                                            ExoDownloadService::class.java,
-                                                            downloadRequest,
-                                                            false
-                                                        )
-                                                    }
+                                                    librarySongs.forEach { downloadUtil.download(it) }
                                                 },
                                                 modifier = Modifier
                                                     .weight(1f)
