@@ -378,13 +378,35 @@ private fun CacheCard(
     val context = LocalContext.current
     val sliderStyle by rememberEnumPreference(SliderStyleKey, SliderStyle.DEFAULT)
     var sliderPosition by remember { mutableStateOf<Float?>(null) }
+    var pendingValue by remember { mutableStateOf<Int?>(null) }
 
     val minValue = 1024f
     val maxValue = 8192f
-    val currentValue = sliderPosition ?: when (selectedValue) {
+
+    fun displayValueFor(value: Int): Float = when (value) {
         0 -> 0f
         -1 -> maxValue
-        else -> selectedValue.toFloat().coerceIn(minValue, maxValue)
+        else -> value.toFloat().coerceIn(minValue, maxValue)
+    }
+
+    val currentValue = sliderPosition ?: displayValueFor(pendingValue ?: selectedValue)
+
+    LaunchedEffect(selectedValue) {
+        if (pendingValue == selectedValue) {
+            pendingValue = null
+        }
+    }
+
+    val commitValue = {
+        val finalValue = sliderPosition ?: currentValue
+        val newValue = when {
+            finalValue >= maxValue -> -1
+            finalValue == 0f -> 0
+            else -> finalValue.toInt().coerceIn(minValue.toInt(), maxValue.toInt())
+        }
+        pendingValue = newValue
+        onValueChange(newValue)
+        sliderPosition = null
     }
 
     Card(
@@ -440,19 +462,7 @@ private fun CacheCard(
                         onValueChange = { newValue ->
                             sliderPosition = if (newValue == 0f) 0f else newValue.coerceAtLeast(minValue)
                         },
-                        onValueChangeFinished = {
-                            val finalValue = sliderPosition ?: currentValue
-                            val newValue = when {
-                                finalValue >= maxValue -> -1
-                                finalValue == 0f -> 0
-                                else -> {
-                                    val stepped = ((finalValue / 1024).toInt() * 1024).coerceIn(minValue.toInt(), maxValue.toInt())
-                                    stepped
-                                }
-                            }
-                            onValueChange(newValue)
-                            sliderPosition = null
-                        },
+                        onValueChangeFinished = commitValue,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -464,19 +474,7 @@ private fun CacheCard(
                         onValueChange = { newValue ->
                             sliderPosition = if (newValue == 0f) 0f else newValue.coerceAtLeast(minValue)
                         },
-                        onValueChangeFinished = {
-                            val finalValue = sliderPosition ?: currentValue
-                            val newValue = when {
-                                finalValue >= maxValue -> -1
-                                finalValue == 0f -> 0
-                                else -> {
-                                    val stepped = ((finalValue / 1024).toInt() * 1024).coerceIn(minValue.toInt(), maxValue.toInt())
-                                    stepped
-                                }
-                            }
-                            onValueChange(newValue)
-                            sliderPosition = null
-                        },
+                        onValueChangeFinished = commitValue,
                         squigglesSpec = SquigglySlider.SquigglesSpec(
                             amplitude = 2.dp,
                             strokeWidth = 4.dp,
@@ -492,19 +490,7 @@ private fun CacheCard(
                         onValueChange = { newValue ->
                             sliderPosition = if (newValue == 0f) 0f else newValue.coerceAtLeast(minValue)
                         },
-                        onValueChangeFinished = {
-                            val finalValue = sliderPosition ?: currentValue
-                            val newValue = when {
-                                finalValue >= maxValue -> -1
-                                finalValue == 0f -> 0
-                                else -> {
-                                    val stepped = ((finalValue / 1024).toInt() * 1024).coerceIn(minValue.toInt(), maxValue.toInt())
-                                    stepped
-                                }
-                            }
-                            onValueChange(newValue)
-                            sliderPosition = null
-                        },
+                        onValueChangeFinished = commitValue,
                         thumb = { Spacer(modifier = Modifier.size(0.dp)) },
                         track = { sliderState ->
                             PlayerSliderTrack(
