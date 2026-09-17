@@ -16,13 +16,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.Download.STATE_COMPLETED
 import androidx.media3.exoplayer.offline.Download.STATE_DOWNLOADING
 import androidx.media3.exoplayer.offline.Download.STATE_QUEUED
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import com.maloy.muzza.LocalDatabase
@@ -184,24 +182,15 @@ fun QueueSelectionMenu(
         }
         DownloadListMenu(
             state = downloadState,
-            onDownload = {
-                selection.forEach {
-                    val mediaMetadata = it.mediaItem.metadata ?: return@forEach
-                    database.query {
-                        insert(mediaMetadata)
+                onDownload = {
+                    selection.forEach {
+                        val mediaMetadata = it.mediaItem.metadata ?: return@forEach
+                        database.query {
+                            insert(mediaMetadata)
+                        }
+                        downloadUtil.download(mediaMetadata)
                     }
-                    val downloadRequest = DownloadRequest.Builder(mediaMetadata.id, mediaMetadata.id.toUri())
-                        .setCustomCacheKey(mediaMetadata.id)
-                        .setData(mediaMetadata.title.toByteArray())
-                        .build()
-                    DownloadService.sendAddDownload(
-                        context,
-                        ExoDownloadService::class.java,
-                        downloadRequest,
-                        false
-                    )
-                }
-            },
+                },
             onRemoveDownload = {
                 selection.forEach {
                     DownloadService.sendRemoveDownload(

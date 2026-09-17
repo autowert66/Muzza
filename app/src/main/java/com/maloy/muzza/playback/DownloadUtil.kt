@@ -18,11 +18,14 @@ import com.maloy.muzza.constants.AudioQuality
 import com.maloy.muzza.constants.AudioQualityKey
 import com.maloy.muzza.db.MusicDatabase
 import com.maloy.muzza.db.entities.FormatEntity
+import com.maloy.muzza.db.entities.Song
 import com.maloy.muzza.db.entities.SongEntity
 import com.maloy.muzza.di.DownloadCache
 import com.maloy.muzza.di.PlayerCache
 import com.maloy.muzza.models.MediaMetadata
+import com.maloy.muzza.utils.CoverStore
 import com.maloy.muzza.utils.YTPlayerUtils
+import com.maloy.muzza.utils.canonicalCoverUrl
 import com.maloy.muzza.utils.enumPreference
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -38,6 +41,10 @@ import okhttp3.OkHttpClient
 import java.util.concurrent.Executor
 import javax.inject.Inject
 import javax.inject.Singleton
+
+// SQLite rejects IN clauses with more variables than this (999 by default on older
+// Android versions); keep one slot of headroom.
+private const val SQLITE_MAX_VARIABLES = 900
 
 @Singleton
 class DownloadUtil @Inject constructor(
@@ -120,19 +127,23 @@ class DownloadUtil @Inject constructor(
         )
     }
     val downloads = MutableStateFlow<Map<String, Download>>(emptyMap())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun getDownload(songId: String?): Flow<Download?> = downloads.map { it[songId] }
 
     fun download(songs: List<MediaMetadata>) {
-        songs.forEach { song -> downloadSong(song.id, song.title) }
+        songs.forEach { song -> download(song) }
     }
-    fun download(song: MediaMetadata){
-        downloadSong(song.id, song.title)
+    fun download(song: MediaMetadata) {
+        downloadSong(song.id, song.title, song.thumbnailUrl)
     }
-    fun download(song: SongEntity){
-        downloadSong(song.id, song.title)
+    fun download(song: SongEntity) {
+        downloadSong(song.id, song.title, song.thumbnailUrl)
     }
-    private fun downloadSong(id: String, title: String){
+    fun download(song: Song) {
+        download(song.song)
+    }
+    private fun downloadSong(id: String, title: String, thumbnailUrl: String?) {
         val downloadRequest = DownloadRequest.Builder(id, id.toUri())
             .setCustomCacheKey(id)
             .setData(title.toByteArray())
@@ -142,7 +153,29 @@ class DownloadUtil @Inject constructor(
             ExoDownloadService::class.java,
             downloadRequest,
             false)
+        scope.launch { CoverStore.ensure(context, thumbnailUrl) }
     }
+
+    private suspend fun getSongsByIdsChunked(ids: Collection<String>): List<Song> =
+        ids.chunked(SQLITE_MAX_VARIABLES).flatMap { database.getSongsByIds(it) }
+
+    private suspend fun ensureCoverFor(id: String) {
+        val song = database.getSongsByIds(listOf(id)).firstOrNull() ?: return
+        if (song.song.isLocal) return
+        CoverStore.ensure(context, song.song.thumbnailUrl)
+    }
+
+    private suspend fun deleteCoverFor(id: String) {
+        val song = database.getSongsByIds(listOf(id)).firstOrNull() ?: return
+        val thumbnailUrl = song.song.thumbnailUrl ?: return
+        val key = canonicalCoverUrl(thumbnailUrl)
+        val remainingIds = downloads.value.keys - id
+        val stillUsed = remainingIds.isNotEmpty() &&
+            getSongsByIdsChunked(remainingIds)
+                .any { it.song.thumbnailUrl?.let(::canonicalCoverUrl) == key }
+        if (!stillUsed) CoverStore.delete(context, thumbnailUrl)
+    }
+
     init {
         val result = mutableMapOf<String, Download>()
         val cursor = downloadManager.downloadIndex.getDownloads()
@@ -167,10 +200,24 @@ class DownloadUtil @Inject constructor(
                     }
                     if (download.state == Download.STATE_COMPLETED) {
                         cleanupScope.launch { dropRedundantStreamCache(download.request.id) }
+                        scope.launch { ensureCoverFor(download.request.id) }
                     }
+                }
+
+                override fun onDownloadRemoved(downloadManager: DownloadManager, download: Download) {
+                    downloads.update { it - download.request.id }
+                    scope.launch { deleteCoverFor(download.request.id) }
                 }
             }
         )
+        scope.launch {
+            val completedIds = result.values
+                .filter { it.state == Download.STATE_COMPLETED }
+                .map { it.request.id }
+            getSongsByIdsChunked(completedIds)
+                .filterNot { it.song.isLocal }
+                .forEach { CoverStore.ensure(context, it.song.thumbnailUrl) }
+        }
     }
 
     private fun dropRedundantStreamCache(mediaId: String) {

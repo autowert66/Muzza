@@ -83,7 +83,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.palette.graphics.Palette
-import coil.ImageLoader
+import coil.imageLoader
 import coil.request.ImageRequest
 import com.maloy.muzza.LocalPlayerConnection
 import com.maloy.muzza.R
@@ -689,10 +689,9 @@ fun Lyrics(
                         if (coverUrl != null) {
                             withContext(Dispatchers.IO) {
                                 try {
-                                    val loader = ImageLoader(context)
                                     val req = ImageRequest.Builder(context).data(coverUrl)
                                         .allowHardware(false).build()
-                                    val result = loader.execute(req)
+                                    val result = context.imageLoader.execute(req)
                                     val bmp = result.drawable?.toBitmap()
                                     if (bmp != null) {
                                         val palette = Palette.from(bmp).generate()

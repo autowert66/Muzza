@@ -42,8 +42,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.net.toUri
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import com.maloy.innertube.YouTube
@@ -82,7 +80,8 @@ fun MediaMetadataMenu(
     val playerConnection = LocalPlayerConnection.current ?: return
     val librarySong by database.song(mediaMetadata.id).collectAsState(initial = null)
 
-    val download by LocalDownloadUtil.current.getDownload(mediaMetadata.id)
+    val downloadUtil = LocalDownloadUtil.current
+    val download by downloadUtil.getDownload(mediaMetadata.id)
         .collectAsState(initial = null)
 
     val artists = remember(mediaMetadata.artists) {
@@ -408,17 +407,7 @@ fun MediaMetadataMenu(
                     database.transaction {
                         insert(mediaMetadata)
                     }
-                    val downloadRequest =
-                        DownloadRequest.Builder(mediaMetadata.id, mediaMetadata.id.toUri())
-                            .setCustomCacheKey(mediaMetadata.id)
-                            .setData(mediaMetadata.title.toByteArray())
-                            .build()
-                    DownloadService.sendAddDownload(
-                        context,
-                        ExoDownloadService::class.java,
-                        downloadRequest,
-                        false
-                    )
+                    downloadUtil.download(mediaMetadata)
                 },
                 onRemoveDownload = {
                     DownloadService.sendRemoveDownload(

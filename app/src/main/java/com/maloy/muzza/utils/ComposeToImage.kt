@@ -16,7 +16,7 @@ import androidx.core.graphics.createBitmap
 import androidx.core.graphics.drawable.toBitmap
 import androidx.core.graphics.withClip
 import androidx.core.graphics.withTranslation
-import coil.ImageLoader
+import coil.imageLoader
 import coil.request.ImageRequest
 import com.maloy.muzza.R
 import kotlinx.coroutines.Dispatchers
@@ -61,13 +61,12 @@ object ComposeToImage {
         var coverArtBitmap: Bitmap? = null
         if (coverArtUrl != null) {
             try {
-                val imageLoader = ImageLoader(context)
                 val request = ImageRequest.Builder(context)
                     .data(coverArtUrl)
                     .size(256)
                     .allowHardware(false)
                     .build()
-                val result = imageLoader.execute(request)
+                val result = context.imageLoader.execute(request)
                 coverArtBitmap = result.drawable?.toBitmap(256, 256, Bitmap.Config.ARGB_8888)
             } catch (_: Exception) {}
         }
