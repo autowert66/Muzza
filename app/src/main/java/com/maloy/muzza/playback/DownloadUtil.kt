@@ -43,6 +43,10 @@ import java.util.concurrent.Executor
 import javax.inject.Inject
 import javax.inject.Singleton
 
+// SQLite rejects IN clauses with more variables than this (999 by default on older
+// Android versions); keep one slot of headroom.
+private const val SQLITE_MAX_VARIABLES = 900
+
 @Singleton
 class DownloadUtil @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -158,6 +162,9 @@ class DownloadUtil @Inject constructor(
         scope.launch { CoverStore.ensure(context, thumbnailUrl) }
     }
 
+    private suspend fun getSongsByIdsChunked(ids: Collection<String>): List<Song> =
+        ids.chunked(SQLITE_MAX_VARIABLES).flatMap { database.getSongsByIds(it) }
+
     private suspend fun ensureCoverFor(id: String) {
         val song = database.getSongsByIds(listOf(id)).firstOrNull() ?: return
         if (song.song.isLocal) return
@@ -170,7 +177,7 @@ class DownloadUtil @Inject constructor(
         val key = canonicalCoverUrl(thumbnailUrl)
         val remainingIds = downloads.value.keys - id
         val stillUsed = remainingIds.isNotEmpty() &&
-            database.getSongsByIds(remainingIds.toList())
+            getSongsByIdsChunked(remainingIds)
                 .any { it.song.thumbnailUrl?.let(::canonicalCoverUrl) == key }
         if (!stillUsed) CoverStore.delete(context, thumbnailUrl)
     }
@@ -202,9 +209,12 @@ class DownloadUtil @Inject constructor(
             }
         )
         scope.launch {
-            result.values
+            val completedIds = result.values
                 .filter { it.state == Download.STATE_COMPLETED }
-                .forEach { ensureCoverFor(it.request.id) }
+                .map { it.request.id }
+            getSongsByIdsChunked(completedIds)
+                .filterNot { it.song.isLocal }
+                .forEach { CoverStore.ensure(context, it.song.thumbnailUrl) }
         }
     }
 }
