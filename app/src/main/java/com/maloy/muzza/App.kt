@@ -28,8 +28,12 @@ import com.maloy.muzza.constants.SYSTEM_DEFAULT
 import com.maloy.muzza.constants.VisitorDataKey
 import com.maloy.muzza.extensions.toEnum
 import com.maloy.muzza.extensions.toInetSocketAddress
+<<<<<<< HEAD
 import com.maloy.muzza.utils.cipher.PlayerJsFetcher
 import com.maloy.muzza.utils.OfflineCoverInterceptor
+=======
+import com.maloy.muzza.utils.cipher.CipherDeobfuscator
+>>>>>>> fix-playback-download-issue
 import com.maloy.muzza.utils.dataStore
 import com.maloy.muzza.utils.get
 import com.maloy.muzza.utils.reportException
@@ -53,6 +57,11 @@ class App : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         Timber.plant(Timber.DebugTree())
+
+        // Must run before any playback/download: the cipher (signature/n-transform) and PoToken
+        // generators read CipherDeobfuscator.appContext, and without it every WEB_REMIX stream
+        // resolution fails and falls back to clients YouTube rate-limits ("not a bot" checks).
+        CipherDeobfuscator.initialize(this)
 
         val locale = Locale.getDefault()
         val languageTag = locale.toLanguageTag().replace("-Hant", "")
