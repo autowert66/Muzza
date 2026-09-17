@@ -43,12 +43,15 @@ import androidx.media3.common.Player.REPEAT_MODE_ONE
 import androidx.media3.common.Player.STATE_IDLE
 import androidx.media3.common.Timeline
 import androidx.media3.common.audio.SonicAudioProcessor
+import androidx.media3.datasource.DataSink
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR
+import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.cache.ContentMetadata
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
@@ -1282,6 +1285,7 @@ class MusicService : MediaLibraryService(),
                     // truncated write can still make media3 record a short content length, so
                     // the resolver drops such entries before they can break playback (see
                     // createDataSourceFactory).
+                    .setCacheWriteDataSinkFactory(streamCacheWriteDataSinkFactory(playerCache))
                     .setUpstreamDataSourceFactory(
                         DefaultDataSource.Factory(
                             this,
@@ -1301,6 +1305,36 @@ class MusicService : MediaLibraryService(),
             // DownloadUtil into the download cache.
             .setCacheWriteDataSinkFactory(null)
             .setFlags(FLAG_IGNORE_CACHE_ON_ERROR)
+
+    /**
+     * Sink that populates the song cache for network streams only. Local media (file/content URIs)
+     * is read straight from disk, so caching it would just duplicate the file into the song cache
+     * and make local songs show up as cached.
+     */
+    private fun streamCacheWriteDataSinkFactory(cache: SimpleCache): DataSink.Factory =
+        DataSink.Factory {
+            object : DataSink {
+                private val cacheSink = CacheDataSink.Factory().setCache(cache).createDataSink()
+                private var delegate: DataSink? = null
+
+                override fun open(dataSpec: DataSpec) {
+                    val scheme = dataSpec.uri.scheme
+                    delegate = if (scheme == "http" || scheme == "https") {
+                        cacheSink.also { it.open(dataSpec) }
+                    } else {
+                        null
+                    }
+                }
+
+                override fun write(buffer: ByteArray, offset: Int, length: Int) {
+                    delegate?.write(buffer, offset, length)
+                }
+
+                override fun close() {
+                    delegate?.close()
+                }
+            }
+        }
 
     private suspend fun validateStreamUrl(url: String): Boolean {
         return try {
