@@ -28,12 +28,8 @@ import com.maloy.muzza.constants.SYSTEM_DEFAULT
 import com.maloy.muzza.constants.VisitorDataKey
 import com.maloy.muzza.extensions.toEnum
 import com.maloy.muzza.extensions.toInetSocketAddress
-<<<<<<< HEAD
-import com.maloy.muzza.utils.cipher.PlayerJsFetcher
 import com.maloy.muzza.utils.OfflineCoverInterceptor
-=======
 import com.maloy.muzza.utils.cipher.CipherDeobfuscator
->>>>>>> fix-playback-download-issue
 import com.maloy.muzza.utils.dataStore
 import com.maloy.muzza.utils.get
 import com.maloy.muzza.utils.reportException
