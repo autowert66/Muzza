@@ -6,7 +6,6 @@ import androidx.core.content.getSystemService
 import androidx.core.net.toUri
 import androidx.media3.database.DatabaseProvider
 import androidx.media3.datasource.ResolvingDataSource
-import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.offline.Download
@@ -26,11 +25,14 @@ import com.maloy.muzza.models.MediaMetadata
 import com.maloy.muzza.utils.YTPlayerUtils
 import com.maloy.muzza.utils.enumPreference
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import java.util.concurrent.Executor
@@ -48,28 +50,23 @@ class DownloadUtil @Inject constructor(
     private val connectivityManager = context.getSystemService<ConnectivityManager>()!!
     private val audioQuality by enumPreference(context, AudioQualityKey, AudioQuality.AUTO)
     private val songUrlCache = HashMap<String, Pair<String, Long>>()
+    private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Downloads write straight into the download cache through the DownloadManager, so this
+    // upstream must not go through the player (stream) cache: doing so made every downloaded
+    // song also land in the player cache, duplicating the bytes and inflating the song cache.
     private val dataSourceFactory = ResolvingDataSource.Factory(
-        CacheDataSource.Factory()
-            .setCache(playerCache)
-            .setUpstreamDataSourceFactory(
-                OkHttpDataSource.Factory(
-                    OkHttpClient.Builder()
-                        .proxy(YouTube.proxy)
-                        .proxyAuthenticator { _, response ->
-                            response.request.newBuilder()
-                                .header("Proxy-Authorization", YouTube.proxyAuth!!)
-                                .build()
-                        }
-                        .build(),
-                ),
-            ),
+        OkHttpDataSource.Factory(
+            OkHttpClient.Builder()
+                .proxy(YouTube.proxy)
+                .proxyAuthenticator { _, response ->
+                    response.request.newBuilder()
+                        .header("Proxy-Authorization", YouTube.proxyAuth!!)
+                        .build()
+                }
+                .build(),
+        ),
     ) { dataSpec ->
         val mediaId = dataSpec.key ?: error("No media id")
-        val length = if (dataSpec.length >= 0) dataSpec.length else 1
-
-        if (playerCache.isCached(mediaId, dataSpec.position, length)) {
-            return@Factory dataSpec
-        }
 
         songUrlCache[mediaId]?.takeIf { it.second > System.currentTimeMillis() }?.let {
             return@Factory dataSpec.withUri(it.first.toUri())
@@ -153,6 +150,13 @@ class DownloadUtil @Inject constructor(
             result[cursor.download.request.id] = cursor.download
         }
         downloads.value = result
+        // A song that was streamed before it was downloaded keeps a redundant copy in the stream
+        // cache. The download is authoritative once complete, so drop the copy instead of letting
+        // it keep counting toward the song cache.
+        val completedIds = result.filterValues { it.state == Download.STATE_COMPLETED }.keys
+        cleanupScope.launch {
+            playerCache.keys.filter { it in completedIds }.forEach(::dropRedundantStreamCache)
+        }
         downloadManager.addListener(
             object : DownloadManager.Listener {
                 override fun onDownloadChanged(downloadManager: DownloadManager, download: Download, finalException: Exception?) {
@@ -161,8 +165,15 @@ class DownloadUtil @Inject constructor(
                             set(download.request.id, download)
                         }
                     }
+                    if (download.state == Download.STATE_COMPLETED) {
+                        cleanupScope.launch { dropRedundantStreamCache(download.request.id) }
+                    }
                 }
             }
         )
+    }
+
+    private fun dropRedundantStreamCache(mediaId: String) {
+        runCatching { playerCache.removeResource(mediaId) }
     }
 }

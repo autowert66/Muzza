@@ -49,6 +49,7 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR
+import androidx.media3.datasource.cache.ContentMetadata
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -1276,12 +1277,11 @@ class MusicService : MediaLibraryService(),
             .setUpstreamDataSourceFactory(
                 CacheDataSource.Factory()
                     .setCache(playerCache)
-                    // Read-only during playback. If the cache is allowed to write, a stream truncated
-                    // mid-write (e.g. YouTube throttling) makes media3 persist a content length equal
-                    // to the truncation point for the song. That short length then permanently fails
-                    // every later request/seek past it (POSITION_OUT_OF_RANGE). The cache is still
-                    // populated by downloads.
-                    .setCacheWriteDataSinkFactory(null)
+                    // Streamed audio is written to the song cache here and served from it on
+                    // later plays; the LRU evictor keeps it within the configured size. A
+                    // truncated write can still make media3 record a short content length, so
+                    // the resolver drops such entries before they can break playback (see
+                    // createDataSourceFactory).
                     .setUpstreamDataSourceFactory(
                         DefaultDataSource.Factory(
                             this,
@@ -1297,6 +1297,8 @@ class MusicService : MediaLibraryService(),
                         )
                     )
             )
+            // Never write downloads from the playback pipeline; explicit downloads go through
+            // DownloadUtil into the download cache.
             .setCacheWriteDataSinkFactory(null)
             .setFlags(FLAG_IGNORE_CACHE_ON_ERROR)
 
@@ -1356,12 +1358,28 @@ class MusicService : MediaLibraryService(),
                 }
             }
 
-            if (downloadCache.isCached(
-                    mediaId,
-                    dataSpec.position,
-                    if (dataSpec.length >= 0) dataSpec.length else 1
-                ) ||
-                playerCache.isCached(mediaId, dataSpec.position, CHUNK_LENGTH)
+            // A stream truncated mid-write (e.g. YouTube throttling) makes media3 record a
+            // content length equal to the truncation point. That short length then permanently
+            // fails every later open()/seek past it with POSITION_OUT_OF_RANGE. Drop such an
+            // entry so it is re-fetched instead of erroring.
+            val expectedLength = runBlocking(Dispatchers.IO) {
+                database.format(mediaId).firstOrNull()?.contentLength
+            }
+            if (expectedLength != null) {
+                val cachedLength = ContentMetadata.getContentLength(
+                    playerCache.getContentMetadata(mediaId)
+                )
+                if (cachedLength != C.LENGTH_UNSET.toLong() && cachedLength < expectedLength) {
+                    runCatching { playerCache.removeResource(mediaId) }
+                }
+            }
+
+            // Serve straight from the cache only when the whole resource is present. A partial entry
+            // must resolve a stream URL; otherwise, when filling its holes, the cache would fall back
+            // to the bare media-id URI and fail to open it.
+            if (expectedLength != null &&
+                (downloadCache.isCached(mediaId, 0, expectedLength) ||
+                    playerCache.isCached(mediaId, 0, expectedLength))
             ) {
                 scope.launch(Dispatchers.IO) { recoverSong(mediaId) }
                 return@Factory dataSpec
