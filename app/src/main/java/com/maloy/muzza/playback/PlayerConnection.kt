@@ -145,6 +145,10 @@ class PlayerConnection(
         service.playQueue(queue)
     }
 
+    fun stopAndClearQueue() {
+        service.stopAndClearQueue()
+    }
+
     fun playNext(item: MediaItem) = playNext(listOf(item))
     fun playNext(items: List<MediaItem>) {
         if (!allowInternalSync && shouldBlockPlaybackChanges?.invoke() == true) {

@@ -391,8 +391,7 @@ fun BottomSheetPlayer(
         },
         collapsedBackgroundColor = MaterialTheme.colorScheme.surfaceContainer,
         onDismiss = {
-            playerConnection.player.stop()
-            playerConnection.player.clearMediaItems()
+            playerConnection.stopAndClearQueue()
         },
         collapsedContent = {
             MiniPlayer(

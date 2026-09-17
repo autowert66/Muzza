@@ -120,6 +120,7 @@ import com.maloy.muzza.extensions.collect
 import com.maloy.muzza.extensions.collectLatest
 import com.maloy.muzza.extensions.currentMetadata
 import com.maloy.muzza.extensions.findNextMediaItemById
+import com.maloy.muzza.extensions.getShuffleOrderIndices
 import com.maloy.muzza.extensions.mediaItems
 import com.maloy.muzza.extensions.metadata
 import com.maloy.muzza.extensions.setOffloadEnabled
@@ -219,6 +220,10 @@ class MusicService : MediaLibraryService(),
 
     private var currentQueue: Queue = EmptyQueue
     var queueTitle: String? = null
+
+    // Shuffle order restored from disk, consumed once by onShuffleModeEnabledChanged so that
+    // restoring a shuffled queue does not regenerate a fresh random order.
+    private var pendingShuffleOrder: IntArray? = null
 
     private var consecutivePlaybackErr = 0
 
@@ -698,14 +703,30 @@ class MusicService : MediaLibraryService(),
                 scope.launch {
                     playerInitialized.first { it }
                     if (isActive) {
+                        val hideExplicit = dataStore.get(HideExplicitKey, false)
+                        // Keep the persisted order/position consistent with any explicit tracks
+                        // that get filtered out on restore.
+                        val keptIndices = queue.items.indices.filter {
+                            !hideExplicit || !queue.items[it].explicit
+                        }
+                        val remap = keptIndices.withIndex()
+                            .associate { (newIndex, oldIndex) -> oldIndex to newIndex }
+                        val restoredIndex =
+                            queue.mediaItemIndex.coerceIn(0, queue.items.lastIndex.coerceAtLeast(0))
+                        val newIndex = remap[restoredIndex]
+                            ?: keptIndices.count { it < restoredIndex }
+                        val newShuffleOrder = queue.shuffleOrder.mapNotNull { remap[it] }
                         playQueue(
                             queue = ListQueue(
                                 title = queue.title,
-                                items = queue.items.map { it.toMediaItem() },
-                                startIndex = queue.mediaItemIndex,
+                                items = keptIndices.map { queue.items[it].toMediaItem() },
+                                startIndex = newIndex,
                                 position = queue.position
                             ),
-                            playWhenReady = false
+                            playWhenReady = false,
+                            shuffleModeEnabled = queue.shuffleModeEnabled &&
+                                newShuffleOrder.size == keptIndices.size,
+                            shuffleOrder = newShuffleOrder,
                         )
                     }
                 }
@@ -917,12 +938,18 @@ class MusicService : MediaLibraryService(),
         }
     }
 
-    fun playQueue(queue: Queue, playWhenReady: Boolean = true) {
+    fun playQueue(
+        queue: Queue,
+        playWhenReady: Boolean = true,
+        shuffleModeEnabled: Boolean = false,
+        shuffleOrder: List<Int>? = null,
+    ) {
         if (!scope.isActive) {
             scope = CoroutineScope(Dispatchers.Main) + Job()
         }
         currentQueue = queue
         queueTitle = null
+        pendingShuffleOrder = shuffleOrder?.toIntArray()?.takeIf { shuffleModeEnabled && it.isNotEmpty() }
         player.shuffleModeEnabled = false
         if (queue.preloadItem != null) {
             player.setMediaItem(queue.preloadItem!!.toMediaItem())
@@ -957,8 +984,26 @@ class MusicService : MediaLibraryService(),
                     initialStatus.position
                 )
                 player.prepare()
+                if (pendingShuffleOrder != null) {
+                    player.shuffleModeEnabled = true
+                }
                 player.playWhenReady = playWhenReady
             }
+        }
+    }
+
+    private fun clearQueueState() {
+        currentQueue = EmptyQueue
+        queueTitle = null
+        player.shuffleModeEnabled = false
+    }
+
+    fun stopAndClearQueue() {
+        player.stop()
+        player.clearMediaItems()
+        clearQueueState()
+        if (dataStore.get(PersistentQueueKey, true)) {
+            runCatching { filesDir.resolve(PERSISTENT_QUEUE_FILE).delete() }
         }
     }
 
@@ -1110,11 +1155,9 @@ class MusicService : MediaLibraryService(),
     }
 
     override fun onPlaybackStateChanged(@Player.State playbackState: Int) {
-        if (playbackState == STATE_IDLE) {
-            currentQueue = EmptyQueue
-            player.shuffleModeEnabled = false
-            queueTitle = null
-        }
+        // Intentionally does not tear down the queue on STATE_IDLE: media3 reports STATE_IDLE for
+        // playback errors too, and clearing the queue/shuffle there would destroy the user's
+        // custom order and position. Teardown happens explicitly in stopAndClearQueue().
         scheduleCrossfade()
     }
 
@@ -1178,6 +1221,15 @@ class MusicService : MediaLibraryService(),
     override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
         updateNotification()
         if (shuffleModeEnabled) {
+            val restoredOrder = pendingShuffleOrder
+            pendingShuffleOrder = null
+            if (restoredOrder != null &&
+                restoredOrder.isNotEmpty() &&
+                restoredOrder.size == player.mediaItemCount
+            ) {
+                player.setShuffleOrder(DefaultShuffleOrder(restoredOrder, System.currentTimeMillis()))
+                return
+            }
             val shuffledIndices = IntArray(player.mediaItemCount) { it }
             shuffledIndices.shuffle()
             shuffledIndices[shuffledIndices.indexOf(player.currentMediaItemIndex)] =
@@ -1567,14 +1619,20 @@ class MusicService : MediaLibraryService(),
 
     private fun saveQueueToDisk() {
         if (player.playbackState == STATE_IDLE) {
-            filesDir.resolve(PERSISTENT_QUEUE_FILE).delete()
+            // media3 reports STATE_IDLE for playback errors as well; only delete the persisted
+            // queue when playback was actually stopped, so an error can't wipe it.
+            if (player.playerError == null) {
+                filesDir.resolve(PERSISTENT_QUEUE_FILE).delete()
+            }
             return
         }
         val persistQueue = PersistQueue(
             title = queueTitle,
             items = player.mediaItems.mapNotNull { it.metadata },
             mediaItemIndex = player.currentMediaItemIndex,
-            position = player.currentPosition
+            position = player.currentPosition,
+            shuffleModeEnabled = player.shuffleModeEnabled,
+            shuffleOrder = player.getShuffleOrderIndices(),
         )
         runCatching {
             filesDir.resolve(PERSISTENT_QUEUE_FILE).outputStream().use { fos ->
@@ -1632,6 +1690,7 @@ class MusicService : MediaLibraryService(),
         super.onTaskRemoved(rootIntent)
         if (dataStore.get(StopMusicOnTaskClearKey, false)) {
             player.stop()
+            clearQueueState()
             stopSelf()
             return
         }

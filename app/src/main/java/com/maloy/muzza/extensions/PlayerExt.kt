@@ -62,6 +62,9 @@ fun Player.getQueueWindows(): List<Timeline.Window> {
     return queue.toList()
 }
 
+fun Player.getShuffleOrderIndices(): List<Int> =
+    if (shuffleModeEnabled) getQueueWindows().map { it.firstPeriodIndex } else emptyList()
+
 fun Player.getCurrentQueueIndex(): Int {
     if (currentTimeline.isEmpty) {
         return -1
