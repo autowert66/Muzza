@@ -426,6 +426,12 @@ private fun CacheCard(
                             text = stringResource(R.string.size_used, "${(usedSpace.toFloat() / totalSpace * 100).toInt()}%"),
                             style = MaterialTheme.typography.titleMedium
                         )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "${Formatter.formatShortFileSize(context, usedSpace)} / ${Formatter.formatShortFileSize(context, totalSpace)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 Spacer(modifier = Modifier.height(12.dp))
