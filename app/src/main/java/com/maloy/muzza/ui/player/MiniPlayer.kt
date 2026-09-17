@@ -61,6 +61,7 @@ import com.maloy.muzza.constants.MiniPlayerHeight
 import com.maloy.muzza.constants.MiniPlayerStyle
 import com.maloy.muzza.constants.MiniPlayerStyleKey
 import com.maloy.muzza.constants.ThumbnailCornerRadius
+import com.maloy.muzza.extensions.resumeIfIdleAfterError
 import com.maloy.muzza.extensions.togglePlayPause
 import com.maloy.muzza.listentogether.RoomRole
 import com.maloy.muzza.models.MediaMetadata
@@ -130,10 +131,12 @@ fun MiniPlayer(
                                 when {
                                     offsetX > threshold && canSkipPrevious -> {
                                         playerConnection.player.seekToPreviousMediaItem()
+                                        playerConnection.player.resumeIfIdleAfterError()
                                     }
 
                                     offsetX < -threshold && canSkipNext -> {
                                         playerConnection.player.seekToNext()
+                                        playerConnection.player.resumeIfIdleAfterError()
                                     }
                                 }
                                 offsetX = 0f

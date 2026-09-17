@@ -781,7 +781,7 @@ fun BottomSheetPlayer(
                                 .size(24.dp)
                                 .combinedClickable(
                                     enabled = !isListenTogetherGuest,
-                                    onClick = { playerConnection.player.seekToPrevious() },
+                                    onClick = { playerConnection.seekToPrevious() },
                                     onLongClick = {
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                         playerConnection.player.seekTo(
@@ -858,7 +858,7 @@ fun BottomSheetPlayer(
                                 .size(24.dp)
                                 .combinedClickable(
                                     enabled = !isListenTogetherGuest,
-                                    onClick = { playerConnection.player.seekToNext() },
+                                    onClick = { playerConnection.seekToNext() },
                                     onLongClick = {
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                         playerConnection.player.seekTo(

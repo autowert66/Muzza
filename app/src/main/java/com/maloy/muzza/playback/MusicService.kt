@@ -1133,6 +1133,14 @@ class MusicService : MediaLibraryService(),
             consecutivePlaybackErr--
         }
 
+        // Media3 keeps the player in STATE_IDLE after a playback error, and seeking to another item
+        // while idle does not clear that error. If the item changed because the user navigated,
+        // prepare() clears the error and starts the newly selected item.
+        if (player.playbackState == STATE_IDLE && player.playerError != null) {
+            player.prepare()
+            player.playWhenReady = true
+        }
+
         if (player.isPlaying && reason == MEDIA_ITEM_TRANSITION_REASON_SEEK) {
             player.prepare()
             player.play()

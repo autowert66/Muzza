@@ -93,6 +93,7 @@ import com.maloy.muzza.constants.SliderStyleKey
 import com.maloy.muzza.constants.TwoLineSongItemLabelKey
 import com.maloy.muzza.extensions.metadata
 import com.maloy.muzza.extensions.move
+import com.maloy.muzza.extensions.resumeIfIdleAfterError
 import com.maloy.muzza.extensions.togglePlayPause
 import com.maloy.muzza.listentogether.RoomRole
 import com.maloy.muzza.ui.component.BottomSheet
@@ -612,7 +613,7 @@ fun Queue(
                                                         playerConnection.player.seekToDefaultPosition(
                                                             window.firstPeriodIndex
                                                         )
-                                                        playerConnection.player.playWhenReady = true
+                                                        playerConnection.player.resumeIfIdleAfterError()
                                                     }
                                                 }
                                             }

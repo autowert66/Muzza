@@ -12,10 +12,25 @@ import com.maloy.muzza.models.MediaMetadata
 import java.util.ArrayDeque
 
 fun Player.togglePlayPause() {
-    if (!playWhenReady && playbackState == Player.STATE_IDLE) {
+    if (playbackState == Player.STATE_IDLE) {
+        // Media3 leaves the player in STATE_IDLE after a playback error and only prepare() clears
+        // it. A plain toggle here would flip playWhenReady without ever retrying the track.
         prepare()
+        playWhenReady = true
+        return
     }
     playWhenReady = !playWhenReady
+}
+
+/**
+ * Media3 keeps the player in STATE_IDLE after a playback error, and seeking to another position or
+ * item while idle does not clear that error. Call this after a seek to clear it and start playback.
+ */
+fun Player.resumeIfIdleAfterError() {
+    if (playbackState == Player.STATE_IDLE) {
+        prepare()
+    }
+    playWhenReady = true
 }
 
 fun Player.toggleRepeatMode() {

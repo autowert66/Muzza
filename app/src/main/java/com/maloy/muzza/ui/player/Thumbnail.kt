@@ -58,6 +58,7 @@ import com.maloy.muzza.constants.PlayerStyleKey
 import com.maloy.muzza.constants.ShowLyricsKey
 import com.maloy.muzza.constants.SwipeThumbnailKey
 import com.maloy.muzza.constants.ThumbnailCornerRadiusV2Key
+import com.maloy.muzza.extensions.resumeIfIdleAfterError
 import com.maloy.muzza.extensions.togglePlayPause
 import com.maloy.muzza.models.MediaMetadata
 import com.maloy.muzza.ui.component.AsyncThumbnail
@@ -222,12 +223,14 @@ fun Thumbnail(
                                             offsetX.value > threshold && lockedPrevMetadata != null -> {
                                                 offsetX.animateTo(itemWidth, tween(300))
                                                 playerConnection.player.seekToPreviousMediaItem()
+                                                playerConnection.player.resumeIfIdleAfterError()
                                                 offsetX.snapTo(0f)
                                             }
 
                                             offsetX.value < -threshold && lockedNextMetadata != null -> {
                                                 offsetX.animateTo(-itemWidth, tween(300))
                                                 playerConnection.player.seekToNext()
+                                                playerConnection.player.resumeIfIdleAfterError()
                                                 offsetX.snapTo(0f)
                                             }
 
@@ -266,7 +269,7 @@ fun Thumbnail(
         LaunchedEffect(error) {
             if (error != null && !hasHandledError) {
                 hasHandledError = true
-                playerConnection.player.prepare()
+                playerConnection.player.resumeIfIdleAfterError()
             }
         }
         AnimatedVisibility(
@@ -312,7 +315,7 @@ fun Thumbnail(
             error?.let { playbackException ->
                 PlaybackError(
                     error = playbackException,
-                    retry = { playerConnection.player.prepare() },
+                    retry = { playerConnection.player.resumeIfIdleAfterError() },
                 )
             }
         }

@@ -50,9 +50,18 @@ class PlayerConnection(
 
     val playbackState = MutableStateFlow(service.player.playbackState)
     private val playWhenReady = MutableStateFlow(service.player.playWhenReady)
+    // STATE_IDLE must not count as playing: after a playback error the player is idle while
+    // playWhenReady may still be true, which would otherwise show a pause button and a stale
+    // "playing" state on top of the error screen.
     val isPlaying = combine(playbackState, playWhenReady) { playbackState, playWhenReady ->
-        playWhenReady && playbackState != STATE_ENDED
-    }.stateIn(scope, SharingStarted.Lazily, service.player.playWhenReady && service.player.playbackState != STATE_ENDED)
+        playWhenReady && playbackState != STATE_ENDED && playbackState != Player.STATE_IDLE
+    }.stateIn(
+        scope,
+        SharingStarted.Lazily,
+        service.player.playWhenReady &&
+            service.player.playbackState != STATE_ENDED &&
+            service.player.playbackState != Player.STATE_IDLE
+    )
     val mediaMetadata = MutableStateFlow(service.player.currentMetadata)
     val currentSong = mediaMetadata.flatMapLatest {
         database.song(it?.id)
