@@ -694,15 +694,13 @@ fun ImportFromSpotifyScreen(
             navController.navigateUp()
         }
     }
-    BackHandler {
-        if (importFromSpotifyViewModel.isImportingInProgress.value) {
+    if (importFromSpotifyViewModel.isImportingInProgress.value) {
+        BackHandler {
             Toast.makeText(
                 context,
                 "Don't close the app or go back. This operation doesn't run in the background, so stay put until it's done!",
                 Toast.LENGTH_SHORT
             ).show()
-        } else {
-            navController.navigateUp()
         }
     }
     LaunchedEffect(logsListState.canScrollForward) {

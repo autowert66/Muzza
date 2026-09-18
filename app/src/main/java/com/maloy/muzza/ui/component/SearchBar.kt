@@ -2,8 +2,8 @@
 
 package com.maloy.muzza.ui.component
 
-import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.activity.compose.PredictiveBackHandler
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -50,6 +50,7 @@ import androidx.compose.material3.internal.Strings
 import androidx.compose.material3.internal.getString
 import androidx.compose.material3.tokens.MotionTokens
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -84,6 +85,7 @@ import androidx.compose.ui.util.lerp
 import com.maloy.muzza.constants.AppBarHeight
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.coroutines.cancellation.CancellationException
 
 @ExperimentalMaterial3Api
 @Composable
@@ -120,15 +122,18 @@ fun TopSearch(
         }
     }
 
-    val animationProgress: Float by animateFloatAsState(
-        targetValue = if (active) 1f else 0f,
-        animationSpec =
-        tween(
+    val searchBarProgress = remember { Animatable(if (active) 1f else 0f) }
+    val animationProgress by searchBarProgress.asState()
+    val searchBarAnimationSpec = remember {
+        tween<Float>(
             durationMillis = AnimationDurationMillis,
             easing = MotionTokens.EasingLegacyCubicBezier,
-        ),
-        label = "",
-    )
+        )
+    }
+
+    LaunchedEffect(active) {
+        searchBarProgress.animateTo(if (active) 1f else 0f, searchBarAnimationSpec)
+    }
 
     val defaultInputFieldShape = SearchBarDefaults.inputFieldShape
     val defaultFullScreenShape = SearchBarDefaults.fullScreenShape
@@ -238,8 +243,16 @@ fun TopSearch(
         }
     }
 
-    BackHandler(enabled = active) {
-        onActiveChange(false)
+    PredictiveBackHandler(enabled = active) { progress ->
+        try {
+            progress.collect { backEvent ->
+                searchBarProgress.snapTo(1f - backEvent.progress.coerceIn(0f, 1f))
+            }
+            onActiveChange(false)
+        } catch (e: CancellationException) {
+            searchBarProgress.animateTo(1f, searchBarAnimationSpec)
+            throw e
+        }
     }
 }
 
