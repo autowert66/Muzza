@@ -36,19 +36,22 @@ import com.maloy.muzza.constants.likedMusicDescriptionKey
 import com.maloy.muzza.constants.likedMusicThumbnailKey
 import com.maloy.muzza.constants.likedMusicTitleKey
 import com.maloy.muzza.db.MusicDatabase
+import com.maloy.muzza.db.SQLITE_MAX_VARIABLES
 import com.maloy.muzza.db.entities.Song
 import com.maloy.muzza.di.DownloadCache
 import com.maloy.muzza.di.PlayerCache
 import com.maloy.muzza.extensions.toEnum
 import com.maloy.muzza.playback.DownloadUtil
+import com.maloy.muzza.utils.CacheWatcher
 import com.maloy.muzza.utils.SyncUtils
 import com.maloy.muzza.utils.dataStore
+import com.maloy.muzza.utils.isAlbumFullyDownloaded
+import com.maloy.muzza.utils.isPlaylistFullyDownloaded
 import com.maloy.muzza.utils.reportException
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -58,9 +61,11 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.LocalDateTime
 import javax.inject.Inject
@@ -166,7 +171,7 @@ class LibraryAlbumsViewModel @Inject constructor(
                 ) { albums, pairs, completedIds ->
                     val songsByAlbum = pairs.groupBy({ it.albumId }, { it.songId })
                     albums.filter { album ->
-                        songsByAlbum[album.id].orEmpty().all { it in completedIds }
+                        isAlbumFullyDownloaded(songsByAlbum[album.id], completedIds)
                     }
                 }
             }
@@ -245,8 +250,10 @@ class LibraryPlaylistsViewModel @Inject constructor(
                 ) { playlists, pairs, completedIds ->
                     val songsByPlaylist = pairs.groupBy({ it.playlistId }, { it.songId })
                     playlists.filter { playlist ->
-                        val songIds = songsByPlaylist[playlist.id].orEmpty()
-                        songIds.isNotEmpty() && songIds.all { it in completedIds }
+                        isPlaylistFullyDownloaded(
+                            songsByPlaylist[playlist.id].orEmpty(),
+                            completedIds
+                        )
                     }
                 }
             }
@@ -293,16 +300,19 @@ class ArtistSongsViewModel @Inject constructor(
 
 @HiltViewModel
 class LibraryMixViewModel @Inject constructor(
-    database: MusicDatabase,
+    private val database: MusicDatabase,
     downloadUtil: DownloadUtil,
     private val syncUtils: SyncUtils,
+    private val cacheWatcher: CacheWatcher,
     @PlayerCache private val playerCache: SimpleCache,
     @DownloadCache private val downloadCache: SimpleCache,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
-    private val _cachedSongs = MutableStateFlow<List<Song>>(emptyList())
     private val _playlistInfo = MutableStateFlow<LikedMusicPlaylistFragments?>(null)
-    val cachedSongs: StateFlow<List<Song>> = _cachedSongs
+    val cachedSongs: StateFlow<List<Song>?> = cacheWatcher.ticks
+        .map { computeCachedSongs() }
+        .flowOn(Dispatchers.IO)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
@@ -333,41 +343,41 @@ class LibraryMixViewModel @Inject constructor(
         .map { it[likedMusicDescriptionKey] ?: "" }
         .stateIn(viewModelScope, SharingStarted.Lazily, "")
 
-    init {
-        viewModelScope.launch {
-            while (true) {
-                val cachedIds = playerCache.keys.map { it }.toSet()
-                val downloadedIds = downloadCache.keys.map { it }.toSet()
-                val pureCacheIds = cachedIds.subtract(downloadedIds)
+    private suspend fun computeCachedSongs(): List<Song> = withContext(Dispatchers.IO) {
+        val cachedIds = playerCache.keys.toSet()
+        val downloadedIds = downloadCache.keys.toSet()
+        val pureCacheIds = cachedIds.subtract(downloadedIds)
 
-                val songs = if (pureCacheIds.isNotEmpty()) {
-                    database.getSongsByIds(pureCacheIds.toList())
-                } else {
-                    emptyList()
-                }
+        val songs = if (pureCacheIds.isNotEmpty()) {
+            pureCacheIds.toList().chunked(SQLITE_MAX_VARIABLES).flatMap { database.getSongsByIds(it) }
+        } else {
+            emptyList()
+        }
 
-                val completeSongs = songs.filter {
-                    val contentLength = it.format?.contentLength
-                    contentLength != null && playerCache.isCached(it.song.id, 0, contentLength)
-                }
+        val completeSongs = songs.filter {
+            val contentLength = it.format?.contentLength
+            contentLength != null && playerCache.isCached(it.song.id, 0, contentLength)
+        }
 
-                if (completeSongs.isNotEmpty()) {
-                    database.query {
-                        completeSongs.forEach {
-                            if (it.song.dateDownload == null) {
-                                update(it.song.copy(dateDownload = LocalDateTime.now()))
-                            }
-                        }
-                    }
-                }
-
-                _cachedSongs.value = completeSongs
-                    .filter { it.song.dateDownload != null }
-                    .sortedByDescending { it.song.dateDownload }
-
-                delay(1000)
+        val now = LocalDateTime.now()
+        val withDate = completeSongs.map { song ->
+            if (song.song.dateDownload == null) {
+                song.copy(song = song.song.copy(dateDownload = now))
+            } else {
+                song
             }
         }
+        if (completeSongs.any { it.song.dateDownload == null }) {
+            database.query {
+                completeSongs.forEach {
+                    if (it.song.dateDownload == null) update(it.song.copy(dateDownload = now))
+                }
+            }
+        }
+        withDate.sortedByDescending { it.song.dateDownload }
+    }
+
+    init {
         viewModelScope.launch(Dispatchers.IO) {
             val currentThumbnail = savedLikedMusicThumbnail.first()
             val currentTitle = savedLikedMusicTitle.first()

@@ -77,7 +77,7 @@ class HistoryViewModel @Inject constructor(
             }
         }
         .flowOn(Dispatchers.Default)
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyMap())
+        .stateIn(viewModelScope, SharingStarted.Lazily, null)
 
     init {
         fetchRemoteHistory()

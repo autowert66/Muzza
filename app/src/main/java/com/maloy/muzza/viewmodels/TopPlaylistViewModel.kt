@@ -32,5 +32,5 @@ constructor(
         topPeriod
             .flatMapLatest { period ->
                 database.mostPlayedSongs(period.toTimeMillis(), top.toInt())
-            }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+            }.stateIn(viewModelScope, SharingStarted.Lazily, null)
 }

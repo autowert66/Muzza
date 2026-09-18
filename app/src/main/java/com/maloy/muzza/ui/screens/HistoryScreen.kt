@@ -82,6 +82,8 @@ import com.maloy.muzza.ui.component.LocalMenuState
 import com.maloy.muzza.ui.component.NavigationTitle
 import com.maloy.muzza.ui.component.SongListItem
 import com.maloy.muzza.ui.component.YouTubeListItem
+import com.maloy.muzza.ui.component.shimmer.ListItemPlaceHolder
+import com.maloy.muzza.ui.component.shimmer.ShimmerHost
 import com.maloy.muzza.ui.menu.SongMenu
 import com.maloy.muzza.ui.menu.SongSelectionMenu
 import com.maloy.muzza.ui.menu.YouTubeSongMenu
@@ -157,7 +159,9 @@ fun HistoryScreen(
         BackHandler(onBack = onExitSearchingMode)
     }
 
-    val eventsMap by viewModel.events.collectAsState()
+    val eventsMapState by viewModel.events.collectAsState()
+    val isLoadingLocalHistory = eventsMapState == null
+    val eventsMap = eventsMapState.orEmpty()
     val filteredEventsMap = remember(eventsMap, query) {
         if (query.text.isEmpty()) eventsMap
         else eventsMap
@@ -240,6 +244,14 @@ fun HistoryScreen(
                     .only(WindowInsetsSides.Top)
             )
         ) {
+            if (historySource == HistorySource.LOCAL && isLoadingLocalHistory) {
+                item {
+                    ShimmerHost {
+                        repeat(8) { ListItemPlaceHolder() }
+                    }
+                }
+                return@LazyColumn
+            }
             if (historySource == HistorySource.REMOTE && filteredRemoteContent.isNullOrEmpty() && isSearching ||
                 historySource == HistorySource.LOCAL && filteredEventsMap.isEmpty() && isSearching
             ) {

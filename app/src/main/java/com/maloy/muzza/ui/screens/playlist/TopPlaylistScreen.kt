@@ -86,6 +86,8 @@ import com.maloy.muzza.ui.component.FontSizeRange
 import com.maloy.muzza.ui.component.LocalMenuState
 import com.maloy.muzza.ui.component.SongListItem
 import com.maloy.muzza.ui.component.SortHeader
+import com.maloy.muzza.ui.component.shimmer.ListItemPlaceHolder
+import com.maloy.muzza.ui.component.shimmer.ShimmerHost
 import com.maloy.muzza.ui.menu.SongMenu
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -134,7 +136,9 @@ fun TopPlaylistScreen(
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
     val focusRequester = remember { FocusRequester() }
 
-    val songs by viewModel.topSongs.collectAsState()
+    val songsState by viewModel.topSongs.collectAsState()
+    val isLoadingSongs = songsState == null
+    val songs = songsState.orEmpty()
     val scope = rememberCoroutineScope()
     val topSize = 50
     val topPlaylist = Playlist(
@@ -304,6 +308,14 @@ fun TopPlaylistScreen(
             state = state,
             contentPadding = LocalPlayerAwareWindowInsets.current.asPaddingValues(),
         ) {
+            if (isLoadingSongs) {
+                item {
+                    ShimmerHost {
+                        repeat(8) { ListItemPlaceHolder() }
+                    }
+                }
+                return@LazyColumn
+            }
             if (filteredSongs.isEmpty() && isSearching) {
                 item {
                     EmptyPlaceholder(

@@ -17,6 +17,7 @@ import com.maloy.innertube.YouTube
 import com.maloy.muzza.constants.AudioQuality
 import com.maloy.muzza.constants.AudioQualityKey
 import com.maloy.muzza.db.MusicDatabase
+import com.maloy.muzza.db.SQLITE_MAX_VARIABLES
 import com.maloy.muzza.db.entities.FormatEntity
 import com.maloy.muzza.db.entities.Song
 import com.maloy.muzza.db.entities.SongEntity
@@ -50,10 +51,6 @@ import okhttp3.OkHttpClient
 import java.util.concurrent.Executor
 import javax.inject.Inject
 import javax.inject.Singleton
-
-// SQLite rejects IN clauses with more variables than this (999 by default on older
-// Android versions); keep one slot of headroom.
-private const val SQLITE_MAX_VARIABLES = 900
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @Singleton

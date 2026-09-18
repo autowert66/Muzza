@@ -37,7 +37,6 @@ class AutoPlaylistLibraryViewModel @Inject constructor(
             .distinctUntilChanged()
             .flatMapLatest { (sortType, descending) ->
             database.librarySongs(SongSortType.CREATE_DATE, true)
-                .flowOn(Dispatchers.IO)
                 .map { songs ->
                     when (sortType) {
                         SongSortType.CREATE_DATE ->
@@ -55,6 +54,7 @@ class AutoPlaylistLibraryViewModel @Inject constructor(
                             songs.sortedBy { it.song.totalPlayTime }
                     }.reversed(descending)
                 }
-        }.stateIn(scope = viewModelScope, started = SharingStarted.Lazily, initialValue = emptyList())
+                .flowOn(Dispatchers.Default)
+        }.stateIn(scope = viewModelScope, started = SharingStarted.Lazily, initialValue = null)
 }
 
