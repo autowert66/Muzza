@@ -1,6 +1,6 @@
 package com.maloy.muzza.ui.component
 
-import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.AnimationVector1D
@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import com.maloy.muzza.constants.NavigationBarAnimationSpec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Bottom Sheet
@@ -61,6 +62,7 @@ fun BottomSheet(
     backgroundColor: Color = MaterialTheme.colorScheme.surface,
     collapsedBackgroundColor: Color = Color.Transparent,
     isExpandable: Boolean = true,
+    predictiveBackEnabled: Boolean = true,
     onDismiss: (() -> Unit)? = null,
     collapsedContent: @Composable BoxScope.() -> Unit,
     content: @Composable BoxScope.() -> Unit,
@@ -101,8 +103,18 @@ fun BottomSheet(
                 )
             )
     ) {
-        if (!state.isCollapsed && !state.isDismissed) {
-            BackHandler(onBack = state::collapseSoft)
+        PredictiveBackHandler(
+            enabled = predictiveBackEnabled && state.isAnchoredExpanded
+        ) { progress ->
+            try {
+                progress.collect { backEvent ->
+                    state.setPredictiveBackProgress(backEvent.progress)
+                }
+                state.collapseSoft()
+            } catch (e: CancellationException) {
+                state.expandSoft()
+                throw e
+            }
         }
 
         if (!state.isCollapsed) {
@@ -143,6 +155,7 @@ class BottomSheetState(
     private val coroutineScope: CoroutineScope,
     private val animation: Animatable<Dp, AnimationVector1D>,
     private val onAnchorChanged: (Int) -> Unit,
+    private val currentAnchor: () -> Int,
     val collapsedBound: Dp,
 ) : DraggableState by draggableState {
     private val dismissedBound: Dp
@@ -152,6 +165,9 @@ class BottomSheetState(
         get() = animation.upperBound!!
 
     val value by animation.asState()
+
+    val isAnchoredExpanded: Boolean
+        get() = currentAnchor() == expandedAnchor
 
     val isDismissed by derivedStateOf {
         value == animation.lowerBound!!
@@ -210,6 +226,11 @@ class BottomSheetState(
         coroutineScope.launch {
             animation.snapTo(value)
         }
+    }
+
+    suspend fun setPredictiveBackProgress(progress: Float) {
+        val target = expandedBound - (expandedBound - collapsedBound) * progress.coerceIn(0f, 1f)
+        animation.snapTo(target)
     }
 
     fun performFling(velocity: Float, onDismiss: (() -> Unit)?) {
@@ -338,6 +359,7 @@ fun rememberBottomSheetState(
                 }
             },
             onAnchorChanged = { previousAnchor = it },
+            currentAnchor = { previousAnchor },
             coroutineScope = coroutineScope,
             animation = animation,
             collapsedBound = collapsedBound
