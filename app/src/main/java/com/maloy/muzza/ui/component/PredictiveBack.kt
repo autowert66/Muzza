@@ -27,6 +27,7 @@ fun rememberPredictiveBackProgress(
                     progress.snapTo(backEvent.progress.coerceIn(0f, 1f))
                 }
                 onBack()
+                progress.snapTo(0f)
             } catch (e: CancellationException) {
                 withContext(NonCancellable) {
                     progress.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow))
