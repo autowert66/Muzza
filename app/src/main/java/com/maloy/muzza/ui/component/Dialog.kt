@@ -367,10 +367,9 @@ fun CounterDialog(
     upperBound: Int = 100,
     lowerBound: Int = 0,
     resetValue: Int,
-    unitDisplay: String = "",
+    valueText: (Int) -> String = { "$it" },
     onDismiss: () -> Unit,
     onConfirm: (Int) -> Unit,
-    onReset: (() -> Unit)? = null,
     onCancel: (() -> Unit)? = null,
     icon: (@Composable () -> Unit)? = null,
 ) {
@@ -418,7 +417,7 @@ fun CounterDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "${tempValue.intValue}$unitDisplay",
+                        text = valueText(tempValue.intValue),
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(horizontal = 8.dp)
                     )
@@ -457,20 +456,18 @@ fun CounterDialog(
                     horizontalArrangement = Arrangement.End,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    if (onReset != null) {
-                        Row(modifier = Modifier.weight(1f)) {
-                            TextButton(
-                                onClick = { tempValue.intValue = resetValue },
-                            ) {
-                                Text(stringResource(R.string.reset))
-                            }
-                        }
-
+                    Row(modifier = Modifier.weight(1f)) {
                         TextButton(
-                            onClick = { onConfirm(tempValue.intValue) }
+                            onClick = { tempValue.intValue = resetValue },
                         ) {
-                            Text(stringResource(android.R.string.ok))
+                            Text(stringResource(R.string.reset))
                         }
+                    }
+
+                    TextButton(
+                        onClick = { onConfirm(tempValue.intValue) }
+                    ) {
+                        Text(stringResource(android.R.string.ok))
                     }
 
                     if (onCancel != null)
