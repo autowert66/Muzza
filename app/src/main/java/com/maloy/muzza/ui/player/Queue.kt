@@ -281,6 +281,7 @@ fun Queue(
         state = state,
         backgroundColor = MaterialTheme.colorScheme.surfaceColorAtElevation(NavigationBarDefaults.Elevation),
         modifier = modifier,
+        predictiveBackEnabled = !inSelectMode,
         collapsedContent = {
             Row(
                 horizontalArrangement = Arrangement.Center,
