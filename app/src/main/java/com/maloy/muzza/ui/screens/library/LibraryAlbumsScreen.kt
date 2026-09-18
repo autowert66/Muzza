@@ -88,6 +88,8 @@ import com.maloy.muzza.ui.component.LocalMenuState
 import com.maloy.muzza.ui.component.SortHeader
 import com.maloy.muzza.ui.component.predictiveBackExit
 import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
+import com.maloy.muzza.ui.component.shimmer.ListItemPlaceHolder
+import com.maloy.muzza.ui.component.shimmer.ShimmerHost
 import com.maloy.muzza.ui.menu.AlbumMenu
 import com.maloy.muzza.ui.utils.backToMain
 import com.maloy.muzza.utils.isInternetAvailable
@@ -307,6 +309,14 @@ fun LibraryAlbumsScreen(
                         headerContent()
                     }
 
+                    if (filteredAlbums == null) {
+                        item {
+                            ShimmerHost {
+                                repeat(8) { ListItemPlaceHolder() }
+                            }
+                        }
+                    }
+
                     filteredAlbums?.let { albums ->
                         if (albums.isEmpty()) {
                             if (isSearching) {
@@ -408,6 +418,14 @@ fun LibraryAlbumsScreen(
                         contentType = CONTENT_TYPE_HEADER
                     ) {
                         headerContent()
+                    }
+
+                    if (filteredAlbums == null) {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            ShimmerHost {
+                                repeat(8) { ListItemPlaceHolder() }
+                            }
+                        }
                     }
 
                     filteredAlbums?.let { albums ->

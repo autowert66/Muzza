@@ -103,6 +103,8 @@ import com.maloy.muzza.ui.component.SortHeader
 import com.maloy.muzza.ui.component.TextFieldDialog
 import com.maloy.muzza.ui.component.predictiveBackExit
 import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
+import com.maloy.muzza.ui.component.shimmer.ListItemPlaceHolder
+import com.maloy.muzza.ui.component.shimmer.ShimmerHost
 import com.maloy.muzza.ui.menu.PlaylistMenu
 import com.maloy.muzza.ui.utils.backToMain
 import com.maloy.muzza.utils.isInternetAvailable
@@ -389,6 +391,18 @@ fun LibraryPlaylistsScreen(
             ),
         contentAlignment = Alignment.TopStart
     ) {
+        if (filteredPlaylists == null) {
+            LazyColumn(
+                state = lazyListState,
+                contentPadding = LocalPlayerAwareWindowInsets.current.asPaddingValues()
+            ) {
+                item {
+                    ShimmerHost {
+                        repeat(8) { ListItemPlaceHolder() }
+                    }
+                }
+            }
+        }
         filteredPlaylists?.let { playlists ->
             when (viewType) {
                 LibraryViewType.LIST -> {

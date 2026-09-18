@@ -8,7 +8,6 @@ import com.maloy.innertube.models.AlbumItem
 import com.maloy.innertube.models.filterExplicit
 import com.maloy.muzza.constants.HideExplicitKey
 import com.maloy.muzza.db.MusicDatabase
-import com.maloy.muzza.db.entities.Artist
 import com.maloy.muzza.utils.dataStore
 import com.maloy.muzza.utils.get
 import com.maloy.muzza.utils.reportException
@@ -37,15 +36,8 @@ class NewReleaseViewModel @Inject constructor(
     private fun load() {
         viewModelScope.launch {
             YouTube.newReleaseAlbums().onSuccess { albums ->
-                val artists: Set<String>
-                val favouriteArtists: Set<String>
-                database.artistsByCreateDateAsc().first().let { list ->
-                    artists = list.map(Artist::id).toHashSet()
-                    favouriteArtists = list
-                        .filter { it.artist.bookmarkedAt != null }
-                        .map { it.id }
-                        .toHashSet()
-                }
+                val artists = database.libraryArtistIds().first().toHashSet()
+                val favouriteArtists = database.bookmarkedArtistIds().first().toHashSet()
                 _newReleaseAlbums.value = albums
                     .sortedBy { album ->
                         if (album.artists.orEmpty().any { it.id in favouriteArtists }) 0

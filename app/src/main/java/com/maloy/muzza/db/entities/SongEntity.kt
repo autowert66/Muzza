@@ -18,7 +18,11 @@ import java.time.LocalDateTime
     indices = [
         Index(
             value = ["albumId"]
-        )
+        ),
+        Index(value = ["liked"]),
+        Index(value = ["inLibrary"]),
+        Index(value = ["isLocal"]),
+        Index(value = ["dateDownload"])
     ]
 )
 data class SongEntity(

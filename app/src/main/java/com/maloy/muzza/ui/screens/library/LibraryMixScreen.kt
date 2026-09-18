@@ -151,6 +151,7 @@ fun LibraryMixScreen(
     val topSongs by viewModel.topSongs.collectAsState(initial = null)
     val localSongs by viewModel.localSongs.collectAsState()
     val cachedSongs by viewModel.cachedSongs.collectAsState()
+    val cachedSongsOrEmpty = cachedSongs.orEmpty()
     val albums by viewModel.albums.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
     val librarySongs by viewModel.librarySongs.collectAsState(initial = null)
@@ -235,7 +236,7 @@ fun LibraryMixScreen(
             id = "cached",
             name = stringResource(R.string.cached)
         ),
-        songCount = cachedSongs.size,
+        songCount = cachedSongsOrEmpty.size,
         songThumbnails = emptyList()
     )
 
@@ -740,7 +741,7 @@ fun LibraryMixScreen(
                                                                 navController = navController,
                                                                 thumbnail = null,
                                                                 iconThumbnail = Icons.Rounded.Cached,
-                                                                songs = cachedSongs,
+                                                                songs = cachedSongsOrEmpty,
                                                                 coroutineScope = coroutineScope,
                                                                 onDismiss = menuState::dismiss,
                                                                 showRemoveFromCacheButton = true,

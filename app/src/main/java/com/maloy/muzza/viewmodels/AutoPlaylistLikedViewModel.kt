@@ -47,7 +47,6 @@ class AutoPlaylistLikedViewModel  @Inject constructor(
             .distinctUntilChanged()
             .flatMapLatest { (sortType, descending) ->
                 database.likedSongsByCreateDateAsc()
-                    .flowOn(Dispatchers.IO)
                     .map { songs ->
                         when (sortType) {
                             SongSortType.CREATE_DATE -> songs.sortedBy { it.song.liked }
@@ -59,7 +58,8 @@ class AutoPlaylistLikedViewModel  @Inject constructor(
                             SongSortType.PLAY_TIME -> songs.sortedBy { it.song.totalPlayTime }
                         }.reversed(descending)
                     }
-            }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+                    .flowOn(Dispatchers.Default)
+            }.stateIn(viewModelScope, SharingStarted.Lazily, null)
 
     fun syncLikedSongs() {
         viewModelScope.launch(Dispatchers.IO) { syncUtils.syncLikedSongs() }

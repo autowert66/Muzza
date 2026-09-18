@@ -3,6 +3,7 @@ package com.maloy.muzza.db.entities
 import androidx.compose.runtime.Immutable
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.maloy.innertube.YouTube
 import kotlinx.coroutines.CoroutineScope
@@ -14,7 +15,10 @@ import java.time.LocalDateTime
 
 @Suppress("DEPRECATION")
 @Immutable
-@Entity(tableName = "playlist")
+@Entity(
+    tableName = "playlist",
+    indices = [Index(value = ["bookmarkedAt"])]
+)
 data class PlaylistEntity(
     @PrimaryKey val id: String = generatePlaylistId(),
     val name: String,

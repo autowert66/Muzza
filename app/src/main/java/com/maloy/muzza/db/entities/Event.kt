@@ -4,12 +4,16 @@ import androidx.compose.runtime.Immutable
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import java.time.LocalDateTime
 
 @Immutable
 @Entity(
     tableName = "event",
+    indices = [
+        Index(value = ["timestamp"])
+    ],
     foreignKeys = [
         ForeignKey(
             entity = SongEntity::class,

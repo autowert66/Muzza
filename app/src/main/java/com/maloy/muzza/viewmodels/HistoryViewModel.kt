@@ -8,17 +8,22 @@ import com.maloy.muzza.constants.HistorySource
 import com.maloy.muzza.db.MusicDatabase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 import javax.inject.Inject
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class HistoryViewModel @Inject constructor(
     val database: MusicDatabase,
@@ -29,14 +34,27 @@ class HistoryViewModel @Inject constructor(
     var historySource = MutableStateFlow(HistorySource.LOCAL)
     val historyPage = MutableStateFlow<HistoryPage?>(null)
 
+    private val pageSize = 400
+    private val eventLimit = MutableStateFlow(pageSize)
+    private val _canLoadMore = MutableStateFlow(true)
+    val canLoadMore = _canLoadMore.asStateFlow()
+
+    fun loadMore() {
+        if (_canLoadMore.value) eventLimit.update { it + pageSize }
+    }
+
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing = _isRefreshing.asStateFlow()
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
 
-    val events = database.events()
-        .map { events ->
-            events.groupBy {
+    val events = eventLimit
+        .flatMapLatest { limit ->
+            database.events(limit).map { list -> list to (list.size >= limit) }
+        }
+        .map { (allEvents, hasMore) ->
+            _canLoadMore.value = hasMore
+            allEvents.groupBy {
                 val date = it.event.timestamp.toLocalDate()
                 val daysAgo = ChronoUnit.DAYS.between(date, today).toInt()
                 when {
@@ -58,7 +76,8 @@ class HistoryViewModel @Inject constructor(
                 entry.value.distinctBy { it.song.id }
             }
         }
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyMap())
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Lazily, null)
 
     init {
         fetchRemoteHistory()

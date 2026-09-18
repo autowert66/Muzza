@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -33,23 +34,25 @@ class StatsViewModel @Inject constructor(
 
     val mostPlayedSongs = statPeriod.flatMapLatest { period ->
         database.mostPlayedSongs(period.toTimeMillis())
-    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    }.stateIn(viewModelScope, SharingStarted.Lazily, null)
 
     val mostPlayedArtists = statPeriod.flatMapLatest { period ->
         database.mostPlayedArtists(period.toTimeMillis()).map { artists ->
             artists.filter { it.artist.isYouTubeArtist }
         }
-    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Lazily, null)
 
 
     val mostPlayedAlbums = statPeriod.flatMapLatest { period ->
         database.mostPlayedAlbums(period.toTimeMillis())
-    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    }.stateIn(viewModelScope, SharingStarted.Lazily, null)
 
     fun load() {
         viewModelScope.launch {
             mostPlayedArtists.collect { artists ->
-                artists
+                artists.orEmpty()
                     .map { it.artist }
                     .filter {
                         it.thumbnailUrl == null || Duration.between(it.lastUpdateTime, LocalDateTime.now()) > Duration.ofDays(10)
@@ -65,7 +68,7 @@ class StatsViewModel @Inject constructor(
         }
         viewModelScope.launch {
             mostPlayedAlbums.collect { albums ->
-                albums.filter {
+                albums.orEmpty().filter {
                     it.album.songCount == 0
                 }.forEach { album ->
                     YouTube.album(album.id)?.onSuccess { albumPage ->

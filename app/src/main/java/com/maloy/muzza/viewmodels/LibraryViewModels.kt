@@ -8,7 +8,6 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.datasource.cache.SimpleCache
-import androidx.media3.exoplayer.offline.Download
 import com.maloy.innertube.YouTube
 import com.maloy.innertube.models.LikedMusicPlaylistFragments
 import com.maloy.muzza.constants.AlbumFilter
@@ -37,19 +36,22 @@ import com.maloy.muzza.constants.likedMusicDescriptionKey
 import com.maloy.muzza.constants.likedMusicThumbnailKey
 import com.maloy.muzza.constants.likedMusicTitleKey
 import com.maloy.muzza.db.MusicDatabase
+import com.maloy.muzza.db.SQLITE_MAX_VARIABLES
 import com.maloy.muzza.db.entities.Song
 import com.maloy.muzza.di.DownloadCache
 import com.maloy.muzza.di.PlayerCache
 import com.maloy.muzza.extensions.toEnum
 import com.maloy.muzza.playback.DownloadUtil
+import com.maloy.muzza.utils.CacheWatcher
 import com.maloy.muzza.utils.SyncUtils
 import com.maloy.muzza.utils.dataStore
+import com.maloy.muzza.utils.isAlbumFullyDownloaded
+import com.maloy.muzza.utils.isPlaylistFullyDownloaded
 import com.maloy.muzza.utils.reportException
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -60,10 +62,10 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.LocalDateTime
 import javax.inject.Inject
@@ -122,6 +124,9 @@ class LibraryArtistsViewModel @Inject constructor(
                     ?.filter {
                         it.thumbnailUrl == null || Duration.between(it.lastUpdateTime, LocalDateTime.now()) > Duration.ofDays(10)
                     }
+                    // Backfilling every stale artist at once hammered the network and the DB on
+                    // large libraries; bound each pass and let later emissions continue the work.
+                    ?.take(50)
                     ?.forEach { artist ->
                         YouTube.artist(artist.id).onSuccess { artistPage ->
                             database.query {
@@ -161,12 +166,12 @@ class LibraryAlbumsViewModel @Inject constructor(
                 AlbumFilter.LIKED -> database.albumsLiked(sortType, descending)
                 AlbumFilter.DOWNLOADED -> combine(
                     database.combinedAlbums(sortType, descending),
-                    downloadUtil.downloads
-                ) { albums, downloads ->
+                    database.albumSongPairs(),
+                    downloadUtil.downloadedIds
+                ) { albums, pairs, completedIds ->
+                    val songsByAlbum = pairs.groupBy({ it.albumId }, { it.songId })
                     albums.filter { album ->
-                        database.albumSongs(album.id).first().all { song ->
-                            downloads[song.id]?.state == Download.STATE_COMPLETED
-                        }
+                        isAlbumFullyDownloaded(songsByAlbum[album.id], completedIds)
                     }
                 }
             }
@@ -240,13 +245,15 @@ class LibraryPlaylistsViewModel @Inject constructor(
                 PlaylistFilter.LOCAL -> database.localPlaylists(sortType, descending)
                 PlaylistFilter.DOWNLOADED -> combine(
                     database.combinedPlaylists(sortType, descending),
-                    downloadUtil.downloads
-                ) { playlists, downloads ->
+                    database.playlistSongPairs(),
+                    downloadUtil.downloadedIds
+                ) { playlists, pairs, completedIds ->
+                    val songsByPlaylist = pairs.groupBy({ it.playlistId }, { it.songId })
                     playlists.filter { playlist ->
-                        val songs = database.playlistSongs(playlist.id).first()
-                        songs.isNotEmpty() && songs.all { song ->
-                            downloads[song.song.id]?.state == Download.STATE_COMPLETED
-                        }
+                        isPlaylistFullyDownloaded(
+                            songsByPlaylist[playlist.id].orEmpty(),
+                            completedIds
+                        )
                     }
                 }
             }
@@ -293,16 +300,19 @@ class ArtistSongsViewModel @Inject constructor(
 
 @HiltViewModel
 class LibraryMixViewModel @Inject constructor(
-    database: MusicDatabase,
+    private val database: MusicDatabase,
     downloadUtil: DownloadUtil,
     private val syncUtils: SyncUtils,
+    private val cacheWatcher: CacheWatcher,
     @PlayerCache private val playerCache: SimpleCache,
     @DownloadCache private val downloadCache: SimpleCache,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
-    private val _cachedSongs = MutableStateFlow<List<Song>>(emptyList())
     private val _playlistInfo = MutableStateFlow<LikedMusicPlaylistFragments?>(null)
-    val cachedSongs: StateFlow<List<Song>> = _cachedSongs
+    val cachedSongs: StateFlow<List<Song>?> = cacheWatcher.ticks
+        .map { computeCachedSongs() }
+        .flowOn(Dispatchers.IO)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
@@ -333,41 +343,41 @@ class LibraryMixViewModel @Inject constructor(
         .map { it[likedMusicDescriptionKey] ?: "" }
         .stateIn(viewModelScope, SharingStarted.Lazily, "")
 
-    init {
-        viewModelScope.launch {
-            while (true) {
-                val cachedIds = playerCache.keys.map { it }.toSet()
-                val downloadedIds = downloadCache.keys.map { it }.toSet()
-                val pureCacheIds = cachedIds.subtract(downloadedIds)
+    private suspend fun computeCachedSongs(): List<Song> = withContext(Dispatchers.IO) {
+        val cachedIds = playerCache.keys.toSet()
+        val downloadedIds = downloadCache.keys.toSet()
+        val pureCacheIds = cachedIds.subtract(downloadedIds)
 
-                val songs = if (pureCacheIds.isNotEmpty()) {
-                    database.getSongsByIds(pureCacheIds.toList())
-                } else {
-                    emptyList()
-                }
+        val songs = if (pureCacheIds.isNotEmpty()) {
+            pureCacheIds.toList().chunked(SQLITE_MAX_VARIABLES).flatMap { database.getSongsByIds(it) }
+        } else {
+            emptyList()
+        }
 
-                val completeSongs = songs.filter {
-                    val contentLength = it.format?.contentLength
-                    contentLength != null && playerCache.isCached(it.song.id, 0, contentLength)
-                }
+        val completeSongs = songs.filter {
+            val contentLength = it.format?.contentLength
+            contentLength != null && playerCache.isCached(it.song.id, 0, contentLength)
+        }
 
-                if (completeSongs.isNotEmpty()) {
-                    database.query {
-                        completeSongs.forEach {
-                            if (it.song.dateDownload == null) {
-                                update(it.song.copy(dateDownload = LocalDateTime.now()))
-                            }
-                        }
-                    }
-                }
-
-                _cachedSongs.value = completeSongs
-                    .filter { it.song.dateDownload != null }
-                    .sortedByDescending { it.song.dateDownload }
-
-                delay(1000)
+        val now = LocalDateTime.now()
+        val withDate = completeSongs.map { song ->
+            if (song.song.dateDownload == null) {
+                song.copy(song = song.song.copy(dateDownload = now))
+            } else {
+                song
             }
         }
+        if (completeSongs.any { it.song.dateDownload == null }) {
+            database.query {
+                completeSongs.forEach {
+                    if (it.song.dateDownload == null) update(it.song.copy(dateDownload = now))
+                }
+            }
+        }
+        withDate.sortedByDescending { it.song.dateDownload }
+    }
+
+    init {
         viewModelScope.launch(Dispatchers.IO) {
             val currentThumbnail = savedLikedMusicThumbnail.first()
             val currentTitle = savedLikedMusicTitle.first()
@@ -481,24 +491,7 @@ class LibraryMixViewModel @Inject constructor(
     val localSongs = database.localSongs(SongSortType.CREATE_DATE, true)
         .stateIn(viewModelScope, SharingStarted.Lazily, null)
 
-    val downloadSongs =
-        downloadUtil.downloads
-            // Collapse the constant DownloadManager progress churn down to only the set of
-            // completed ids; the query below then re-runs only when a download actually
-            // completes, not on every progress tick.
-            .map { downloads ->
-                downloads.filterValues { it.state == Download.STATE_COMPLETED }.keys
-            }
-            .distinctUntilChanged()
-            .flatMapLatest { completedIds ->
-                if (completedIds.isEmpty()) {
-                    flowOf(emptyList())
-                } else {
-                    // Fetch only the completed songs by id instead of loading the entire
-                    // song table and filtering in memory.
-                    database.songsByIdsFlow(completedIds.toList())
-                        .flowOn(Dispatchers.IO)
-                }
-            }
+    // Shared, cached, chunked source of truth for downloaded songs (see DownloadUtil).
+    val downloadSongs = downloadUtil.downloadedSongs
     val topSongs = database.mostPlayedSongs(0, 100)
 }

@@ -53,6 +53,8 @@ import com.maloy.muzza.ui.component.IconButton
 import com.maloy.muzza.ui.component.LocalMenuState
 import com.maloy.muzza.ui.component.NavigationTitle
 import com.maloy.muzza.ui.component.SongListItem
+import com.maloy.muzza.ui.component.shimmer.ListItemPlaceHolder
+import com.maloy.muzza.ui.component.shimmer.ShimmerHost
 import com.maloy.muzza.ui.menu.AlbumMenu
 import com.maloy.muzza.ui.menu.ArtistMenu
 import com.maloy.muzza.ui.menu.SongMenu
@@ -74,9 +76,14 @@ fun StatsScreen(
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
 
     val statPeriod by viewModel.statPeriod.collectAsState()
-    val mostPlayedSongs by viewModel.mostPlayedSongs.collectAsState()
-    val mostPlayedArtists by viewModel.mostPlayedArtists.collectAsState()
-    val mostPlayedAlbums by viewModel.mostPlayedAlbums.collectAsState()
+    val mostPlayedSongsState by viewModel.mostPlayedSongs.collectAsState()
+    val mostPlayedArtistsState by viewModel.mostPlayedArtists.collectAsState()
+    val mostPlayedAlbumsState by viewModel.mostPlayedAlbums.collectAsState()
+    val isLoadingStats =
+        mostPlayedSongsState == null && mostPlayedArtistsState == null && mostPlayedAlbumsState == null
+    val mostPlayedSongs = mostPlayedSongsState.orEmpty()
+    val mostPlayedArtists = mostPlayedArtistsState.orEmpty()
+    val mostPlayedAlbums = mostPlayedAlbumsState.orEmpty()
     val lazylistState = rememberLazyListState()
 
     val coroutineScope = rememberCoroutineScope()
@@ -105,6 +112,14 @@ fun StatsScreen(
             ),
             state = lazylistState
         ) {
+            if (isLoadingStats) {
+                item {
+                    ShimmerHost {
+                        repeat(8) { ListItemPlaceHolder() }
+                    }
+                }
+                return@LazyColumn
+            }
             if (mostPlayedSongs.isEmpty() && mostPlayedArtists.isEmpty() && mostPlayedAlbums.isEmpty()) {
                 item {
                     EmptyPlaceholder(

@@ -41,6 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,6 +83,8 @@ import com.maloy.muzza.ui.component.SongListItem
 import com.maloy.muzza.ui.component.YouTubeListItem
 import com.maloy.muzza.ui.component.predictiveBackExit
 import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
+import com.maloy.muzza.ui.component.shimmer.ListItemPlaceHolder
+import com.maloy.muzza.ui.component.shimmer.ShimmerHost
 import com.maloy.muzza.ui.menu.SongMenu
 import com.maloy.muzza.ui.menu.SongSelectionMenu
 import com.maloy.muzza.ui.menu.YouTubeSongMenu
@@ -93,6 +96,7 @@ import com.maloy.muzza.utils.rememberVoiceInput
 import com.maloy.muzza.viewmodels.DateAgo
 import com.maloy.muzza.viewmodels.HistoryViewModel
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -156,7 +160,9 @@ fun HistoryScreen(
         onBack = { if (inSelectMode) onExitSelectionMode() else onExitSearchingMode() },
     )
 
-    val eventsMap by viewModel.events.collectAsState()
+    val eventsMapState by viewModel.events.collectAsState()
+    val isLoadingLocalHistory = eventsMapState == null
+    val eventsMap = eventsMapState.orEmpty()
     val filteredEventsMap = remember(eventsMap, query) {
         if (query.text.isEmpty()) eventsMap
         else eventsMap
@@ -204,6 +210,21 @@ fun HistoryScreen(
         }
     }
 
+    val canLoadMore by viewModel.canLoadMore.collectAsState()
+    LaunchedEffect(lazyListState, canLoadMore) {
+        if (!canLoadMore) return@LaunchedEffect
+        snapshotFlow {
+            val info = lazyListState.layoutInfo
+            val total = info.totalItemsCount
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            total > 0 && lastVisible >= total - 5
+        }
+            .distinctUntilChanged()
+            .collect { shouldLoadMore ->
+                if (shouldLoadMore) viewModel.loadMore()
+            }
+    }
+
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val pullRefreshState = rememberPullToRefreshState()
 
@@ -228,6 +249,14 @@ fun HistoryScreen(
                     .only(WindowInsetsSides.Top)
             )
         ) {
+            if (historySource == HistorySource.LOCAL && isLoadingLocalHistory) {
+                item {
+                    ShimmerHost {
+                        repeat(8) { ListItemPlaceHolder() }
+                    }
+                }
+                return@LazyColumn
+            }
             if (historySource == HistorySource.REMOTE && filteredRemoteContent.isNullOrEmpty() && isSearching ||
                 historySource == HistorySource.LOCAL && filteredEventsMap.isEmpty() && isSearching
             ) {

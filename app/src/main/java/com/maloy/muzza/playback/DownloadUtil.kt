@@ -17,6 +17,7 @@ import com.maloy.innertube.YouTube
 import com.maloy.muzza.constants.AudioQuality
 import com.maloy.muzza.constants.AudioQualityKey
 import com.maloy.muzza.db.MusicDatabase
+import com.maloy.muzza.db.SQLITE_MAX_VARIABLES
 import com.maloy.muzza.db.entities.FormatEntity
 import com.maloy.muzza.db.entities.Song
 import com.maloy.muzza.db.entities.SongEntity
@@ -30,10 +31,19 @@ import com.maloy.muzza.utils.enumPreference
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -42,10 +52,7 @@ import java.util.concurrent.Executor
 import javax.inject.Inject
 import javax.inject.Singleton
 
-// SQLite rejects IN clauses with more variables than this (999 by default on older
-// Android versions); keep one slot of headroom.
-private const val SQLITE_MAX_VARIABLES = 900
-
+@OptIn(ExperimentalCoroutinesApi::class)
 @Singleton
 class DownloadUtil @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -137,6 +144,31 @@ class DownloadUtil @Inject constructor(
     val downloads = MutableStateFlow<Map<String, Download>>(emptyMap())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    // Completed download ids, collapsed so that DownloadManager progress ticks don't re-trigger
+    // database queries. This is the single cheap source of truth for "is downloaded".
+    val downloadedIds: StateFlow<Set<String>> = downloads
+        .map { map -> map.filterValues { it.state == Download.STATE_COMPLETED }.keys }
+        .distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, emptySet())
+
+    // Shared list of downloaded songs. Queries only the completed ids (chunked) instead of
+    // materializing the entire song table with its relations, and is cached across screens.
+    // `null` means "not loaded yet" so callers can show a loading state instead of "empty".
+    //
+    // The DB query and ordering are keyed only on `downloadedIds`. `downloads` emits on every
+    // progress tick, so reacting to it (directly or via `combine`) would either restart the query
+    // or re-run this sort hundreds of times during an active download. `updateTimeMs` is already
+    // final by the time a completion flips the id set, so a snapshot read here is sufficient.
+    val downloadedSongs: StateFlow<List<Song>?> = downloadedIds
+        .flatMapLatest { ids ->
+            songsByIdsFlowChunked(ids).map { songs ->
+                val map = downloads.value
+                songs.sortedBy { map[it.id]?.updateTimeMs ?: 0L }
+            }
+        }
+        .flowOn(Dispatchers.IO)
+        .stateIn(scope, SharingStarted.WhileSubscribed(5_000), null)
+
     fun getDownload(songId: String?): Flow<Download?> = downloads.map { it[songId] }
 
     fun download(songs: List<MediaMetadata>) {
@@ -166,6 +198,13 @@ class DownloadUtil @Inject constructor(
 
     private suspend fun getSongsByIdsChunked(ids: Collection<String>): List<Song> =
         ids.chunked(SQLITE_MAX_VARIABLES).flatMap { database.getSongsByIds(it) }
+
+    private fun songsByIdsFlowChunked(ids: Collection<String>): Flow<List<Song>> {
+        if (ids.isEmpty()) return flowOf(emptyList())
+        return combine(ids.chunked(SQLITE_MAX_VARIABLES).map { database.songsByIdsFlow(it) }) { chunks ->
+            chunks.flatMap { it }
+        }
+    }
 
     private suspend fun ensureCoverFor(id: String) {
         val song = database.getSongsByIds(listOf(id)).firstOrNull() ?: return

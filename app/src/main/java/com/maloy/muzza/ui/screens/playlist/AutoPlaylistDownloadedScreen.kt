@@ -116,6 +116,8 @@ import com.maloy.muzza.ui.component.SongListItem
 import com.maloy.muzza.ui.component.SortHeader
 import com.maloy.muzza.ui.component.predictiveBackExit
 import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
+import com.maloy.muzza.ui.component.shimmer.ListItemPlaceHolder
+import com.maloy.muzza.ui.component.shimmer.ShimmerHost
 import com.maloy.muzza.ui.menu.AutoPlaylistMenu
 import com.maloy.muzza.ui.menu.SongMenu
 import com.maloy.muzza.ui.menu.SongSelectionMenu
@@ -159,7 +161,9 @@ fun AutoPlaylistDownloadedScreen(
         }
     }
 
-    val songs by viewModel.downloadedSongs.collectAsState()
+    val downloadedSongsState by viewModel.downloadedSongs.collectAsState()
+    val isLoadingDownloads = downloadedSongsState == null
+    val songs = downloadedSongsState.orEmpty()
     val mutableSongs = remember {
         mutableStateListOf<Song>()
     }
@@ -320,6 +324,14 @@ fun AutoPlaylistDownloadedScreen(
             state = state,
             contentPadding = LocalPlayerAwareWindowInsets.current.asPaddingValues(),
         ) {
+            if (isLoadingDownloads) {
+                item {
+                    ShimmerHost {
+                        repeat(8) { ListItemPlaceHolder() }
+                    }
+                }
+                return@LazyColumn
+            }
             if (filteredSongs.isEmpty() && isSearching) {
                 item {
                     EmptyPlaceholder(

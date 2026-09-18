@@ -60,6 +60,8 @@ import com.maloy.muzza.extensions.togglePlayPause
 import com.maloy.muzza.playback.ExoDownloadService
 import com.maloy.muzza.playback.queues.ListQueue
 import com.maloy.muzza.ui.component.*
+import com.maloy.muzza.ui.component.shimmer.ListItemPlaceHolder
+import com.maloy.muzza.ui.component.shimmer.ShimmerHost
 import com.maloy.muzza.ui.menu.AutoPlaylistMenu
 import com.maloy.muzza.ui.menu.SongMenu
 import com.maloy.muzza.ui.menu.SongSelectionMenu
@@ -86,7 +88,9 @@ fun AutoPlaylistLibraryScreen(
 
     val isPlaying by playerConnection.isPlaying.collectAsState()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
-    val librarySongs by viewModel.librarySongs.collectAsState()
+    val librarySongsState by viewModel.librarySongs.collectAsState()
+    val isLoadingSongs = librarySongsState == null
+    val librarySongs = librarySongsState.orEmpty()
     val scope = rememberCoroutineScope()
     val libraryMusicPlaylist = Playlist(
         playlist = PlaylistEntity(
@@ -257,6 +261,14 @@ fun AutoPlaylistLibraryScreen(
             state = lazyListState,
             contentPadding = LocalPlayerAwareWindowInsets.current.asPaddingValues(),
         ) {
+            if (isLoadingSongs) {
+                item {
+                    ShimmerHost {
+                        repeat(8) { ListItemPlaceHolder() }
+                    }
+                }
+                return@LazyColumn
+            }
             if (filteredSongs.isEmpty() && !isSearching) {
                 item {
                     EmptyPlaceholder(
