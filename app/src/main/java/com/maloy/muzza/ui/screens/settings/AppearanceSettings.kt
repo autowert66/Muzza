@@ -3,7 +3,6 @@ package com.maloy.muzza.ui.screens.settings
 import android.annotation.SuppressLint
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -34,7 +33,6 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -42,7 +40,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -185,12 +182,31 @@ fun AppearanceSettings(
     }
 
     if (showSliderOptionDialog) {
+        var pendingSliderStyle by rememberSaveable {
+            mutableStateOf(sliderStyle)
+        }
+        val enabledSliderColors = SliderDefaults.colors()
+        val previewSliderColors = SliderDefaults.colors(
+            disabledThumbColor = enabledSliderColors.thumbColor,
+            disabledActiveTrackColor = enabledSliderColors.activeTrackColor,
+            disabledActiveTickColor = enabledSliderColors.activeTickColor,
+            disabledInactiveTrackColor = enabledSliderColors.inactiveTrackColor,
+            disabledInactiveTickColor = enabledSliderColors.inactiveTickColor,
+        )
         DefaultDialog(
             buttons = {
                 TextButton(
                     onClick = { showSliderOptionDialog = false }
                 ) {
                     Text(text = stringResource(android.R.string.cancel))
+                }
+                TextButton(
+                    onClick = {
+                        onSliderStyleChange(pendingSliderStyle)
+                        showSliderOptionDialog = false
+                    }
+                ) {
+                    Text(text = stringResource(android.R.string.ok))
                 }
             },
             onDismiss = {
@@ -209,24 +225,20 @@ fun AppearanceSettings(
                         .clip(RoundedCornerShape(16.dp))
                         .border(
                             1.dp,
-                            if (sliderStyle == SliderStyle.DEFAULT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                            if (pendingSliderStyle == SliderStyle.DEFAULT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
                             RoundedCornerShape(16.dp)
                         )
                         .clickable {
-                            onSliderStyleChange(SliderStyle.DEFAULT)
-                            showSliderOptionDialog = false
+                            pendingSliderStyle = SliderStyle.DEFAULT
                         }
                         .padding(16.dp)
                 ) {
-                    var sliderValue by remember {
-                        mutableFloatStateOf(0.5f)
-                    }
                     Slider(
-                        value = sliderValue,
+                        value = 0.5f,
                         valueRange = 0f..1f,
-                        onValueChange = {
-                            sliderValue = it
-                        },
+                        onValueChange = {},
+                        enabled = false,
+                        colors = previewSliderColors,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -239,24 +251,20 @@ fun AppearanceSettings(
                         .clip(RoundedCornerShape(16.dp))
                         .border(
                             1.dp,
-                            if (sliderStyle == SliderStyle.SQUIGGLY) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                            if (pendingSliderStyle == SliderStyle.SQUIGGLY) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
                             RoundedCornerShape(16.dp)
                         )
                         .clickable {
-                            onSliderStyleChange(SliderStyle.SQUIGGLY)
-                            showSliderOptionDialog = false
+                            pendingSliderStyle = SliderStyle.SQUIGGLY
                         }
                         .padding(16.dp)
                 ) {
-                    var sliderValue by remember {
-                        mutableFloatStateOf(0.5f)
-                    }
                     SquigglySlider(
-                        value = sliderValue,
+                        value = 0.5f,
                         valueRange = 0f..1f,
-                        onValueChange = {
-                            sliderValue = it
-                        },
+                        onValueChange = {},
+                        enabled = false,
+                        colors = previewSliderColors,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -269,24 +277,19 @@ fun AppearanceSettings(
                         .clip(RoundedCornerShape(16.dp))
                         .border(
                             1.dp,
-                            if (sliderStyle == SliderStyle.COMPOSE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                            if (pendingSliderStyle == SliderStyle.COMPOSE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
                             RoundedCornerShape(16.dp)
                         )
                         .clickable {
-                            onSliderStyleChange(SliderStyle.COMPOSE)
-                            showSliderOptionDialog = false
+                            pendingSliderStyle = SliderStyle.COMPOSE
                         }
                         .padding(16.dp)
                 ) {
-                    var sliderValue by remember {
-                        mutableFloatStateOf(0.5f)
-                    }
                     Slider(
-                        value = sliderValue,
+                        value = 0.5f,
                         valueRange = 0f..1f,
-                        onValueChange = {
-                            sliderValue = it
-                        },
+                        onValueChange = {},
+                        enabled = false,
                         thumb = { Spacer(modifier = Modifier.size(0.dp)) },
                         track = { sliderState ->
                             PlayerSliderTrack(
@@ -294,13 +297,7 @@ fun AppearanceSettings(
                                 colors = SliderDefaults.colors()
                             )
                         },
-                        modifier = Modifier
-                            .weight(1f)
-                            .pointerInput(Unit) {
-                                detectTapGestures(
-                                    onPress = {}
-                                )
-                            }
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }
