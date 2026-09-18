@@ -85,6 +85,8 @@ import androidx.compose.ui.util.lerp
 import com.maloy.muzza.constants.AppBarHeight
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 
 @ExperimentalMaterial3Api
@@ -250,7 +252,9 @@ fun TopSearch(
             }
             onActiveChange(false)
         } catch (e: CancellationException) {
-            searchBarProgress.animateTo(1f, searchBarAnimationSpec)
+            withContext(NonCancellable) {
+                searchBarProgress.animateTo(1f, searchBarAnimationSpec)
+            }
             throw e
         }
     }

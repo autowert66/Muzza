@@ -65,7 +65,9 @@ import com.maloy.muzza.constants.DialogCornerRadius
 import com.maloy.muzza.constants.SliderStyle
 import com.maloy.muzza.constants.SliderStyleKey
 import com.maloy.muzza.utils.rememberEnumPreference
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import me.saket.squiggles.SquigglySlider
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -87,9 +89,14 @@ fun PredictiveBackDialog(
                 progress.collect { backEvent ->
                     backProgress.snapTo(backEvent.progress.coerceIn(0f, 1f))
                 }
+                if (backProgress.value > 0f) {
+                    backProgress.animateTo(1f, animationSpec)
+                }
                 onDismiss()
             } catch (e: CancellationException) {
-                backProgress.animateTo(0f, animationSpec)
+                withContext(NonCancellable) {
+                    backProgress.animateTo(0f, animationSpec)
+                }
                 throw e
             }
         }
@@ -127,7 +134,25 @@ fun PredictiveBackAlertDialog(
     val animationSpec = remember { spring<Float>(stiffness = Spring.StiffnessMediumLow) }
     AlertDialog(
         onDismissRequest = onDismissRequest,
-        confirmButton = confirmButton,
+        confirmButton = {
+            PredictiveBackHandler { progress ->
+                try {
+                    progress.collect { backEvent ->
+                        backProgress.snapTo(backEvent.progress.coerceIn(0f, 1f))
+                    }
+                    if (backProgress.value > 0f) {
+                        backProgress.animateTo(1f, animationSpec)
+                    }
+                    onDismissRequest()
+                } catch (e: CancellationException) {
+                    withContext(NonCancellable) {
+                        backProgress.animateTo(0f, animationSpec)
+                    }
+                    throw e
+                }
+            }
+            confirmButton()
+        },
         modifier = modifier.graphicsLayer {
             val scale = 1f - 0.15f * backProgress.value
             scaleX = scale
@@ -137,20 +162,7 @@ fun PredictiveBackAlertDialog(
         dismissButton = dismissButton,
         icon = icon,
         title = title,
-        text = {
-            PredictiveBackHandler { progress ->
-                try {
-                    progress.collect { backEvent ->
-                        backProgress.snapTo(backEvent.progress.coerceIn(0f, 1f))
-                    }
-                    onDismissRequest()
-                } catch (e: CancellationException) {
-                    backProgress.animateTo(0f, animationSpec)
-                    throw e
-                }
-            }
-            text?.invoke()
-        },
+        text = text,
         shape = shape,
         containerColor = containerColor,
         iconContentColor = iconContentColor,

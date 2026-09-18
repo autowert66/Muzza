@@ -35,6 +35,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import com.maloy.muzza.ui.utils.top
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 
 val LocalMenuState = compositionLocalOf { MenuState() }
@@ -84,7 +86,9 @@ fun BottomSheetMenu(
                 }
                 state.dismiss()
             } catch (e: CancellationException) {
-                menuProgress.animateTo(1f, animationSpec)
+                withContext(NonCancellable) {
+                    menuProgress.animateTo(1f, animationSpec)
+                }
                 throw e
             }
         }
