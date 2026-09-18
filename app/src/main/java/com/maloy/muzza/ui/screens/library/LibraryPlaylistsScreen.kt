@@ -101,6 +101,8 @@ import com.maloy.muzza.ui.component.PlaylistGridItem
 import com.maloy.muzza.ui.component.PlaylistListItem
 import com.maloy.muzza.ui.component.SortHeader
 import com.maloy.muzza.ui.component.TextFieldDialog
+import com.maloy.muzza.ui.component.predictiveBackExit
+import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
 import com.maloy.muzza.ui.menu.PlaylistMenu
 import com.maloy.muzza.ui.utils.backToMain
 import com.maloy.muzza.utils.isInternetAvailable
@@ -245,9 +247,10 @@ fun LibraryPlaylistsScreen(
         searchQuery = TextFieldValue("")
     }
 
-    if (isSearching) {
-        BackHandler(onBack = onExitSearchingMode)
-    }
+    val searchingBackProgress = rememberPredictiveBackProgress(
+        enabled = isSearching,
+        onBack = onExitSearchingMode,
+    )
 
     var showAddPlaylistDialog by rememberSaveable {
         mutableStateOf(false)
@@ -618,6 +621,7 @@ fun LibraryPlaylistsScreen(
             )
         }
         CenterAlignedTopAppBar(
+            modifier = Modifier.predictiveBackExit(searchingBackProgress),
             title = {
                 if (isSearching) {
                     TextField(

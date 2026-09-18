@@ -5,7 +5,6 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.saveable.listSaver
@@ -181,11 +180,10 @@ fun AutoPlaylistLocalScreen(
         isSearching = false
         searchQuery = TextFieldValue("")
     }
-    if (inSelectMode) {
-        BackHandler(onBack = onExitSelectionMode)
-    } else if (isSearching) {
-        BackHandler(onBack = onExitSearchingMode)
-    }
+    val selectionBackProgress = rememberPredictiveBackProgress(
+        enabled = inSelectMode || isSearching,
+        onBack = { if (inSelectMode) onExitSelectionMode() else onExitSearchingMode() },
+    )
 
 
     LaunchedEffect(inSelectMode) {
@@ -586,6 +584,7 @@ fun AutoPlaylistLocalScreen(
         )
         if (inSelectMode) {
             CenterAlignedTopAppBar(
+                modifier = Modifier.predictiveBackExit(selectionBackProgress),
                 title = {
                     Text(
                         pluralStringResource(
@@ -640,6 +639,7 @@ fun AutoPlaylistLocalScreen(
             )
         } else {
             CenterAlignedTopAppBar(
+                modifier = Modifier.predictiveBackExit(selectionBackProgress),
                 title = {
                     if (isSearching) {
                         TextField(

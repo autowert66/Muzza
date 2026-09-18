@@ -76,15 +76,17 @@ fun BottomSheetMenu(
         menuProgress.animateTo(if (state.isVisible) 1f else 0f, animationSpec)
     }
 
-    PredictiveBackHandler(enabled = state.isVisible) { backProgress ->
-        try {
-            backProgress.collect { backEvent ->
-                menuProgress.snapTo(1f - backEvent.progress.coerceIn(0f, 1f))
+    if (state.isVisible) {
+        PredictiveBackHandler { backProgress ->
+            try {
+                backProgress.collect { backEvent ->
+                    menuProgress.snapTo(1f - backEvent.progress.coerceIn(0f, 1f))
+                }
+                state.dismiss()
+            } catch (e: CancellationException) {
+                menuProgress.animateTo(1f, animationSpec)
+                throw e
             }
-            state.dismiss()
-        } catch (e: CancellationException) {
-            menuProgress.animateTo(1f, animationSpec)
-            throw e
         }
     }
 

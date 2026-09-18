@@ -1,6 +1,5 @@
 package com.maloy.muzza.ui.screens.playlist
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -159,11 +158,10 @@ fun CachePlaylistScreen(
         isSearching = false
         searchQuery = TextFieldValue("")
     }
-    if (inSelectMode) {
-        BackHandler(onBack = onExitSelectionMode)
-    } else if (isSearching) {
-        BackHandler(onBack = onExitSearchingMode)
-    }
+    val selectionBackProgress = rememberPredictiveBackProgress(
+        enabled = inSelectMode || isSearching,
+        onBack = { if (inSelectMode) onExitSelectionMode() else onExitSearchingMode() },
+    )
 
     val downloadUtil = LocalDownloadUtil.current
 
@@ -619,6 +617,7 @@ fun CachePlaylistScreen(
         )
         if (inSelectMode) {
             CenterAlignedTopAppBar(
+                modifier = Modifier.predictiveBackExit(selectionBackProgress),
                 title = {
                     Text(
                         pluralStringResource(
@@ -673,6 +672,7 @@ fun CachePlaylistScreen(
             )
         } else {
             CenterAlignedTopAppBar(
+                modifier = Modifier.predictiveBackExit(selectionBackProgress),
                 title = {
                     if (isSearching) {
                         TextField(
