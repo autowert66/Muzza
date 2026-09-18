@@ -104,7 +104,7 @@ fun BottomSheet(
             )
     ) {
         PredictiveBackHandler(
-            enabled = predictiveBackEnabled && !state.isCollapsed && !state.isDismissed
+            enabled = predictiveBackEnabled && state.isAnchoredExpanded
         ) { progress ->
             try {
                 progress.collect { backEvent ->
@@ -155,6 +155,7 @@ class BottomSheetState(
     private val coroutineScope: CoroutineScope,
     private val animation: Animatable<Dp, AnimationVector1D>,
     private val onAnchorChanged: (Int) -> Unit,
+    private val currentAnchor: () -> Int,
     val collapsedBound: Dp,
 ) : DraggableState by draggableState {
     private val dismissedBound: Dp
@@ -164,6 +165,9 @@ class BottomSheetState(
         get() = animation.upperBound!!
 
     val value by animation.asState()
+
+    val isAnchoredExpanded: Boolean
+        get() = currentAnchor() == expandedAnchor
 
     val isDismissed by derivedStateOf {
         value == animation.lowerBound!!
@@ -355,6 +359,7 @@ fun rememberBottomSheetState(
                 }
             },
             onAnchorChanged = { previousAnchor = it },
+            currentAnchor = { previousAnchor },
             coroutineScope = coroutineScope,
             animation = animation,
             collapsedBound = collapsedBound
