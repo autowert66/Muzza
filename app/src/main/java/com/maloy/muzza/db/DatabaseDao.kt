@@ -24,6 +24,7 @@ import com.maloy.muzza.constants.PlaylistSortType
 import com.maloy.muzza.constants.SongSortType
 import com.maloy.muzza.db.entities.Album
 import com.maloy.muzza.db.entities.AlbumArtistMap
+import com.maloy.muzza.db.entities.AlbumSongPair
 import com.maloy.muzza.db.entities.AlbumEntity
 import com.maloy.muzza.db.entities.AlbumWithSongs
 import com.maloy.muzza.db.entities.Artist
@@ -36,6 +37,7 @@ import com.maloy.muzza.db.entities.Playlist
 import com.maloy.muzza.db.entities.PlaylistEntity
 import com.maloy.muzza.db.entities.PlaylistSong
 import com.maloy.muzza.db.entities.PlaylistSongMap
+import com.maloy.muzza.db.entities.PlaylistSongPair
 import com.maloy.muzza.db.entities.RecentActivityEntity
 import com.maloy.muzza.db.entities.RecentActivityType
 import com.maloy.muzza.db.entities.RelatedSongMap
@@ -355,6 +357,12 @@ interface DatabaseDao {
     @Transaction
     @Query("SELECT * FROM song WHERE id IN (:songIds)")
     fun songsByIdsFlow(songIds: List<String>): Flow<List<Song>>
+
+    @Query("SELECT albumId, songId FROM song_album_map")
+    fun albumSongPairs(): Flow<List<AlbumSongPair>>
+
+    @Query("SELECT playlistId, songId FROM playlist_song_map")
+    fun playlistSongPairs(): Flow<List<PlaylistSongPair>>
 
     @Transaction
     @Query("SELECT * FROM song WHERE liked OR inLibrary IS NOT NULL")

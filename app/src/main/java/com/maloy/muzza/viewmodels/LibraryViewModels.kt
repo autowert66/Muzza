@@ -8,7 +8,6 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.datasource.cache.SimpleCache
-import androidx.media3.exoplayer.offline.Download
 import com.maloy.innertube.YouTube
 import com.maloy.innertube.models.LikedMusicPlaylistFragments
 import com.maloy.muzza.constants.AlbumFilter
@@ -59,8 +58,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -161,12 +158,12 @@ class LibraryAlbumsViewModel @Inject constructor(
                 AlbumFilter.LIKED -> database.albumsLiked(sortType, descending)
                 AlbumFilter.DOWNLOADED -> combine(
                     database.combinedAlbums(sortType, descending),
-                    downloadUtil.downloads
-                ) { albums, downloads ->
+                    database.albumSongPairs(),
+                    downloadUtil.downloadedIds
+                ) { albums, pairs, completedIds ->
+                    val songsByAlbum = pairs.groupBy({ it.albumId }, { it.songId })
                     albums.filter { album ->
-                        database.albumSongs(album.id).first().all { song ->
-                            downloads[song.id]?.state == Download.STATE_COMPLETED
-                        }
+                        songsByAlbum[album.id].orEmpty().all { it in completedIds }
                     }
                 }
             }
@@ -240,13 +237,13 @@ class LibraryPlaylistsViewModel @Inject constructor(
                 PlaylistFilter.LOCAL -> database.localPlaylists(sortType, descending)
                 PlaylistFilter.DOWNLOADED -> combine(
                     database.combinedPlaylists(sortType, descending),
-                    downloadUtil.downloads
-                ) { playlists, downloads ->
+                    database.playlistSongPairs(),
+                    downloadUtil.downloadedIds
+                ) { playlists, pairs, completedIds ->
+                    val songsByPlaylist = pairs.groupBy({ it.playlistId }, { it.songId })
                     playlists.filter { playlist ->
-                        val songs = database.playlistSongs(playlist.id).first()
-                        songs.isNotEmpty() && songs.all { song ->
-                            downloads[song.song.id]?.state == Download.STATE_COMPLETED
-                        }
+                        val songIds = songsByPlaylist[playlist.id].orEmpty()
+                        songIds.isNotEmpty() && songIds.all { it in completedIds }
                     }
                 }
             }
@@ -481,24 +478,7 @@ class LibraryMixViewModel @Inject constructor(
     val localSongs = database.localSongs(SongSortType.CREATE_DATE, true)
         .stateIn(viewModelScope, SharingStarted.Lazily, null)
 
-    val downloadSongs =
-        downloadUtil.downloads
-            // Collapse the constant DownloadManager progress churn down to only the set of
-            // completed ids; the query below then re-runs only when a download actually
-            // completes, not on every progress tick.
-            .map { downloads ->
-                downloads.filterValues { it.state == Download.STATE_COMPLETED }.keys
-            }
-            .distinctUntilChanged()
-            .flatMapLatest { completedIds ->
-                if (completedIds.isEmpty()) {
-                    flowOf(emptyList())
-                } else {
-                    // Fetch only the completed songs by id instead of loading the entire
-                    // song table and filtering in memory.
-                    database.songsByIdsFlow(completedIds.toList())
-                        .flowOn(Dispatchers.IO)
-                }
-            }
+    // Shared, cached, chunked source of truth for downloaded songs (see DownloadUtil).
+    val downloadSongs = downloadUtil.downloadedSongs
     val topSongs = database.mostPlayedSongs(0, 100)
 }
