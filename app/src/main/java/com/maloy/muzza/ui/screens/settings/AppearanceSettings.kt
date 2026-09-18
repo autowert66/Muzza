@@ -138,7 +138,7 @@ fun AppearanceSettings(
                 upperBound = 10,
                 lowerBound = 0,
                 resetValue = 3,
-                unitDisplay = if (thumbnailCornerRadius.toFloat() != 0.toFloat()) "0%" else "%",
+                valueText = { "${it * 10}%" },
                 onConfirm = {
                     showCornerRadiusDialog = false
                     onThumbnailCornerRadius(it)
@@ -146,7 +146,6 @@ fun AppearanceSettings(
                 onCancel = {
                     showCornerRadiusDialog = false
                 },
-                onReset = { onThumbnailCornerRadius(6) },
             )
         }
     }
@@ -177,7 +176,6 @@ fun AppearanceSettings(
                 onCancel = {
                     showNowPlayingPaddingDialog  = false
                 },
-                onReset = { onNowPlayingPadding(35) },
             )
         }
     }
@@ -421,7 +419,7 @@ fun AppearanceSettings(
 
         PreferenceEntry(
             title = { Text(stringResource(R.string.thumbnail_corner_radius)) },
-            description = "$thumbnailCornerRadius" + if (thumbnailCornerRadius.toFloat() != 0.toFloat()) "0%" else "%",
+            description = "${thumbnailCornerRadius * 10}%",
             icon = { Icon(Icons.Rounded.Image, null) },
             onClick = { showCornerRadiusDialog = true }
         )

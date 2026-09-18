@@ -103,7 +103,6 @@ fun PlayerSettings(
             onCancel = {
                 showCrossfadeValueChange = false
             },
-            onReset = { onCrossfadeDurationChange(5) },
         )
     }
 

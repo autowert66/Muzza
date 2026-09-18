@@ -83,14 +83,13 @@ fun LyricsSettings(
             upperBound = 28,
             lowerBound = 10,
             resetValue = 20,
-            unitDisplay = " sp",
+            valueText = { "$it sp" },
             onDismiss = { showFontSizeDialog = false },
             onConfirm = {
                 onLyricFontSizeChange(it)
                 showFontSizeDialog = false
             },
             onCancel = { showFontSizeDialog = false },
-            onReset = { onLyricFontSizeChange(20) },
         )
     }
 
