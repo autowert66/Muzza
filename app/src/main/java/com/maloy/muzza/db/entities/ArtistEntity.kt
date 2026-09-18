@@ -3,6 +3,7 @@ package com.maloy.muzza.db.entities
 import androidx.compose.runtime.Immutable
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import org.apache.commons.lang3.RandomStringUtils
 import java.time.LocalDateTime
@@ -14,7 +15,10 @@ import kotlinx.coroutines.launch
 
 @Suppress("DEPRECATION")
 @Immutable
-@Entity(tableName = "artist")
+@Entity(
+    tableName = "artist",
+    indices = [Index(value = ["bookmarkedAt"])]
+)
 data class ArtistEntity(
     @PrimaryKey val id: String,
     val name: String,

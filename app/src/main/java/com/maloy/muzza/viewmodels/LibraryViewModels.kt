@@ -119,6 +119,9 @@ class LibraryArtistsViewModel @Inject constructor(
                     ?.filter {
                         it.thumbnailUrl == null || Duration.between(it.lastUpdateTime, LocalDateTime.now()) > Duration.ofDays(10)
                     }
+                    // Backfilling every stale artist at once hammered the network and the DB on
+                    // large libraries; bound each pass and let later emissions continue the work.
+                    ?.take(50)
                     ?.forEach { artist ->
                         YouTube.artist(artist.id).onSuccess { artistPage ->
                             database.query {

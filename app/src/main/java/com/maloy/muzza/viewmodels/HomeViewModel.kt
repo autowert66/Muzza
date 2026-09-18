@@ -16,7 +16,6 @@ import com.maloy.muzza.constants.HideExplicitKey
 import com.maloy.muzza.constants.PlaylistSortType
 import com.maloy.muzza.db.MusicDatabase
 import com.maloy.muzza.db.entities.Album
-import com.maloy.muzza.db.entities.Artist
 import com.maloy.muzza.db.entities.LocalItem
 import com.maloy.muzza.db.entities.Song
 import com.maloy.muzza.models.SimilarRecommendation
@@ -378,15 +377,8 @@ class HomeViewModel @Inject constructor(
         }
 
         YouTube.explore().onSuccess { page ->
-            val artists: Set<String>
-            val favouriteArtists: Set<String>
-            database.artistsByCreateDateAsc().first().let { list ->
-                artists = list.map(Artist::id).toHashSet()
-                favouriteArtists = list
-                    .filter { it.artist.bookmarkedAt != null }
-                    .map { it.id }
-                    .toHashSet()
-            }
+            val artists = database.libraryArtistIds().first().toHashSet()
+            val favouriteArtists = database.bookmarkedArtistIds().first().toHashSet()
             explorePage.value = page.copy(
                 newReleaseAlbums = page.newReleaseAlbums
                     .sortedBy { album ->

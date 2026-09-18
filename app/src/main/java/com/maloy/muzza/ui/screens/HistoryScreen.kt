@@ -42,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -201,6 +202,17 @@ fun HistoryScreen(
     val lazyChecker by remember {
         derivedStateOf {
             lazyListState.firstVisibleItemIndex > 0
+        }
+    }
+
+    val canLoadMore by viewModel.canLoadMore.collectAsState()
+    LaunchedEffect(lazyListState, canLoadMore) {
+        if (!canLoadMore) return@LaunchedEffect
+        snapshotFlow {
+            val info = lazyListState.layoutInfo
+            (info.visibleItemsInfo.lastOrNull()?.index ?: 0) to info.totalItemsCount
+        }.collect { (lastVisible, total) ->
+            if (total > 0 && lastVisible >= total - 5) viewModel.loadMore()
         }
     }
 

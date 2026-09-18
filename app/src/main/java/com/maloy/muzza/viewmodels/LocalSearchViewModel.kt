@@ -6,10 +6,11 @@ import com.maloy.muzza.db.MusicDatabase
 import com.maloy.muzza.db.entities.*
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import javax.inject.Inject
 
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 @HiltViewModel
 class LocalSearchViewModel @Inject constructor(
     database: MusicDatabase,
@@ -17,7 +18,7 @@ class LocalSearchViewModel @Inject constructor(
     val query = MutableStateFlow("")
     val filter = MutableStateFlow(LocalFilter.ALL)
 
-    val result = combine(query, filter) { query, filter ->
+    val result = combine(query.debounce(SEARCH_DEBOUNCE_MS), filter) { query, filter ->
         query to filter
     }.flatMapLatest { (query, filter) ->
         if (query.isEmpty()) {
@@ -33,10 +34,10 @@ class LocalSearchViewModel @Inject constructor(
                     val list = songs + albums + artists  + playlists
                     list.distinctBy { it.id }
                 }
-                LocalFilter.SONG -> database.searchSongs(query)
-                LocalFilter.ALBUM -> database.searchAlbums(query)
-                LocalFilter.ARTIST -> database.searchArtists(query)
-                LocalFilter.PLAYLIST -> database.searchPlaylists(query)
+                LocalFilter.SONG -> database.searchSongs(query, RESULT_LIMIT)
+                LocalFilter.ALBUM -> database.searchAlbums(query, RESULT_LIMIT)
+                LocalFilter.ARTIST -> database.searchArtists(query, RESULT_LIMIT)
+                LocalFilter.PLAYLIST -> database.searchPlaylists(query, RESULT_LIMIT)
             }.map { list ->
                 LocalSearchResult(
                     query = query,
@@ -55,6 +56,8 @@ class LocalSearchViewModel @Inject constructor(
 
     companion object {
         const val PREVIEW_SIZE = 3
+        const val RESULT_LIMIT = 200
+        const val SEARCH_DEBOUNCE_MS = 200L
     }
 }
 
