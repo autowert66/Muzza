@@ -95,6 +95,7 @@ import com.maloy.muzza.utils.rememberVoiceInput
 import com.maloy.muzza.viewmodels.DateAgo
 import com.maloy.muzza.viewmodels.HistoryViewModel
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -214,10 +215,14 @@ fun HistoryScreen(
         if (!canLoadMore) return@LaunchedEffect
         snapshotFlow {
             val info = lazyListState.layoutInfo
-            (info.visibleItemsInfo.lastOrNull()?.index ?: 0) to info.totalItemsCount
-        }.collect { (lastVisible, total) ->
-            if (total > 0 && lastVisible >= total - 5) viewModel.loadMore()
+            val total = info.totalItemsCount
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            total > 0 && lastVisible >= total - 5
         }
+            .distinctUntilChanged()
+            .collect { shouldLoadMore ->
+                if (shouldLoadMore) viewModel.loadMore()
+            }
     }
 
     val isRefreshing by viewModel.isRefreshing.collectAsState()

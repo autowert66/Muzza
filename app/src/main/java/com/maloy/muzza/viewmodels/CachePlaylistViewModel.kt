@@ -47,7 +47,8 @@ class CachePlaylistViewModel @Inject constructor(
             computeCachedSongs().let { songs ->
                 when (sortType) {
                     SongSortType.CREATE_DATE ->
-                        songs.sortedBy { descending }
+                        // Already ordered by download date in computeCachedSongs().
+                        songs
 
                     SongSortType.NAME ->
                         songs.sortedBy { it.song.title }

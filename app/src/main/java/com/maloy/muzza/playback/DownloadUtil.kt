@@ -154,11 +154,15 @@ class DownloadUtil @Inject constructor(
     // Shared list of downloaded songs. Queries only the completed ids (chunked) instead of
     // materializing the entire song table with its relations, and is cached across screens.
     // `null` means "not loaded yet" so callers can show a loading state instead of "empty".
-    val downloadedSongs: StateFlow<List<Song>?> = combine(downloadedIds, downloads) { ids, map ->
-        ids to map
-    }
-        .flatMapLatest { (ids, map) ->
+    //
+    // The DB query and ordering are keyed only on `downloadedIds`. `downloads` emits on every
+    // progress tick, so reacting to it (directly or via `combine`) would either restart the query
+    // or re-run this sort hundreds of times during an active download. `updateTimeMs` is already
+    // final by the time a completion flips the id set, so a snapshot read here is sufficient.
+    val downloadedSongs: StateFlow<List<Song>?> = downloadedIds
+        .flatMapLatest { ids ->
             songsByIdsFlowChunked(ids).map { songs ->
+                val map = downloads.value
                 songs.sortedBy { map[it.id]?.updateTimeMs ?: 0L }
             }
         }
