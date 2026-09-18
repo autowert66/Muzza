@@ -196,7 +196,8 @@ fun DefaultDialog(
                 modifier = modifier
                     .padding(24.dp)
             ) {
-                if (icon != null) {                    CompositionLocalProvider(LocalContentColor provides AlertDialogDefaults.iconContentColor) {
+                if (icon != null) {
+                    CompositionLocalProvider(LocalContentColor provides AlertDialogDefaults.iconContentColor) {
                         Box(
                             Modifier.align(Alignment.CenterHorizontally)
                         ) {
