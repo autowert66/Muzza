@@ -545,7 +545,7 @@ fun Lyrics(
 
     if (showShareDialog && shareDialogData != null) {
         val (lyricsText, songTitle, artists) = shareDialogData!!
-        BasicAlertDialog(onDismissRequest = { showShareDialog = false }) {
+        PredictiveBackDialog(onDismiss = { showShareDialog = false }) {
             Card(
                 shape = MaterialTheme.shapes.medium,
                 elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
@@ -714,7 +714,7 @@ fun Lyrics(
                             }
                         }
                     }
-                    BasicAlertDialog(onDismissRequest = { showColorPickerDialog = false }) {
+                    PredictiveBackDialog(onDismiss = { showColorPickerDialog = false }) {
                         Card(
                             shape = RoundedCornerShape(20.dp),
                             modifier = Modifier

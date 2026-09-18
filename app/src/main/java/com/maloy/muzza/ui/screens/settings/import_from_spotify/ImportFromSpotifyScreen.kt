@@ -38,7 +38,7 @@ import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material3.AlertDialogDefaults
-import androidx.compose.material3.BasicAlertDialog
+import com.maloy.muzza.ui.component.PredictiveBackDialog
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -632,16 +632,18 @@ fun ImportFromSpotifyScreen(
         }
     }
     if (isLikedSongsDestinationDialogShown.value) {
-        BasicAlertDialog(
+        PredictiveBackDialog(
+            onDismiss = {
+                isLikedSongsDestinationDialogShown.value = false
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(15.dp)
                 .clip(
                     RoundedCornerShape(15.dp)
                 )
-                .background(AlertDialogDefaults.containerColor), onDismissRequest = {
-                isLikedSongsDestinationDialogShown.value = false
-            }) {
+                .background(AlertDialogDefaults.containerColor),
+        ) {
             Column(modifier = Modifier.padding(15.dp)) {
                 Text(
                     text = stringResource(R.string.choose_liked_songs),

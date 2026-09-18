@@ -34,7 +34,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import com.maloy.muzza.ui.component.PredictiveBackAlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -192,7 +192,7 @@ fun Queue(
     }
 
     if (showSleepTimerDialog) {
-        AlertDialog(
+        PredictiveBackAlertDialog(
             properties = DialogProperties(usePlatformDefaultWidth = false),
             onDismissRequest = { showSleepTimerDialog = false },
             icon = {
@@ -835,7 +835,7 @@ fun DetailsDialog(
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
     val currentFormat by playerConnection.currentFormat.collectAsState(initial = null)
 
-    AlertDialog(
+    PredictiveBackAlertDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false),
         onDismissRequest = onDismiss,
         icon = {
