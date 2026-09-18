@@ -1,11 +1,9 @@
 package com.maloy.muzza.ui.component
 
-import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.activity.compose.PredictiveBackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Column
@@ -27,14 +25,19 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import com.maloy.muzza.ui.utils.top
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.cancellation.CancellationException
 
 val LocalMenuState = compositionLocalOf { MenuState() }
 
@@ -63,16 +66,35 @@ fun BottomSheetMenu(
     background: Color = MaterialTheme.colorScheme.surfaceContainer,
 ) {
     val focusManager = LocalFocusManager.current
+    val menuProgress = remember { Animatable(if (state.isVisible) 1f else 0f) }
+    val progress by menuProgress.asState()
+    val animationSpec = remember { spring<Float>(stiffness = Spring.StiffnessMediumLow) }
+    val visible = state.isVisible || progress > 0f
 
-    AnimatedVisibility(
-        visible = state.isVisible,
-        enter = fadeIn(),
-        exit = fadeOut()
-    ) {
-        BackHandler {
-            state.dismiss()
+    LaunchedEffect(state.isVisible) {
+        if (state.isVisible) {
+            focusManager.clearFocus()
         }
+        menuProgress.animateTo(if (state.isVisible) 1f else 0f, animationSpec)
+    }
 
+    if (state.isVisible) {
+        PredictiveBackHandler { backProgress ->
+            try {
+                backProgress.collect { backEvent ->
+                    menuProgress.snapTo(1f - backEvent.progress.coerceIn(0f, 1f))
+                }
+                state.dismiss()
+            } catch (e: CancellationException) {
+                withContext(NonCancellable) {
+                    menuProgress.animateTo(1f, animationSpec)
+                }
+                throw e
+            }
+        }
+    }
+
+    if (visible) {
         Spacer(
             modifier = Modifier
                 .pointerInput(Unit) {
@@ -80,32 +102,25 @@ fun BottomSheetMenu(
                         state.dismiss()
                     }
                 }
-                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f))
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f * progress))
                 .fillMaxSize()
         )
     }
 
-    AnimatedVisibility(
-        visible = state.isVisible,
-        enter = slideInVertically { it },
-        exit = slideOutVertically { it },
-        modifier = modifier
-    ) {
+    if (visible) {
         Column(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
+                .graphicsLayer {
+                    translationY = (1f - progress) * size.height
+                    alpha = progress
+                }
                 .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Horizontal))
                 .padding(top = 48.dp)
                 .clip(ShapeDefaults.Large.top())
                 .background(background)
         ) {
             state.content(this)
-        }
-    }
-
-    LaunchedEffect(state.isVisible) {
-        if (state.isVisible) {
-            focusManager.clearFocus()
         }
     }
 }

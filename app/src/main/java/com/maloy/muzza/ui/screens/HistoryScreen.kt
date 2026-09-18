@@ -1,6 +1,5 @@
 package com.maloy.muzza.ui.screens
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -81,6 +80,8 @@ import com.maloy.muzza.ui.component.LocalMenuState
 import com.maloy.muzza.ui.component.NavigationTitle
 import com.maloy.muzza.ui.component.SongListItem
 import com.maloy.muzza.ui.component.YouTubeListItem
+import com.maloy.muzza.ui.component.predictiveBackExit
+import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
 import com.maloy.muzza.ui.menu.SongMenu
 import com.maloy.muzza.ui.menu.SongSelectionMenu
 import com.maloy.muzza.ui.menu.YouTubeSongMenu
@@ -150,11 +151,10 @@ fun HistoryScreen(
         isSearching = false
         query = TextFieldValue("")
     }
-    if (inSelectMode) {
-        BackHandler(onBack = onExitSelectionMode)
-    } else if (isSearching) {
-        BackHandler(onBack = onExitSearchingMode)
-    }
+    val selectionBackProgress = rememberPredictiveBackProgress(
+        enabled = inSelectMode || isSearching,
+        onBack = { if (inSelectMode) onExitSelectionMode() else onExitSearchingMode() },
+    )
 
     val eventsMap by viewModel.events.collectAsState()
     val filteredEventsMap = remember(eventsMap, query) {
@@ -517,6 +517,7 @@ fun HistoryScreen(
         state = lazyListState
     )
     CenterAlignedTopAppBar(
+        modifier = Modifier.predictiveBackExit(selectionBackProgress),
         title = {
             if (inSelectMode) {
                 Text(pluralStringResource(R.plurals.n_selected, selection.size, selection.size))

@@ -4,7 +4,6 @@ package com.maloy.muzza.ui.screens
 
 import android.annotation.SuppressLint
 import android.content.Intent
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -109,6 +108,8 @@ import com.maloy.muzza.ui.component.LocalMenuState
 import com.maloy.muzza.ui.component.NavigationTitle
 import com.maloy.muzza.ui.component.SongListItem
 import com.maloy.muzza.ui.component.YouTubeGridItem
+import com.maloy.muzza.ui.component.predictiveBackExit
+import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
 import com.maloy.muzza.ui.component.shimmer.ButtonRowPlaceHolder
 import com.maloy.muzza.ui.component.shimmer.ListItemPlaceHolder
 import com.maloy.muzza.ui.component.shimmer.PlaylistAlbumItemPlaceHolder
@@ -176,9 +177,10 @@ fun AlbumScreen(
         inSelectMode = false
         selection.clear()
     }
-    if (inSelectMode) {
-        BackHandler(onBack = onExitSelectionMode)
-    }
+    val selectionBackProgress = rememberPredictiveBackProgress(
+        enabled = inSelectMode,
+        onBack = onExitSelectionMode,
+    )
 
     LaunchedEffect(albumWithSongs) {
         val songs = albumWithSongs?.songs?.map { it.id }
@@ -753,6 +755,7 @@ fun AlbumScreen(
         )
     }
     CenterAlignedTopAppBar(
+        modifier = Modifier.predictiveBackExit(selectionBackProgress),
         title = {
             if (inSelectMode) {
                 Text(pluralStringResource(R.plurals.n_selected, selection.size, selection.size))

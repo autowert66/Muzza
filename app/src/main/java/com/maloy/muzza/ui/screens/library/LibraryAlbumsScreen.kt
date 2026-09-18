@@ -86,6 +86,8 @@ import com.maloy.muzza.ui.component.LazyColumnScrollbar
 import com.maloy.muzza.ui.component.LazyVerticalGridScrollbar
 import com.maloy.muzza.ui.component.LocalMenuState
 import com.maloy.muzza.ui.component.SortHeader
+import com.maloy.muzza.ui.component.predictiveBackExit
+import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
 import com.maloy.muzza.ui.menu.AlbumMenu
 import com.maloy.muzza.ui.utils.backToMain
 import com.maloy.muzza.utils.isInternetAvailable
@@ -216,9 +218,10 @@ fun LibraryAlbumsScreen(
         searchQuery = TextFieldValue("")
     }
 
-    if (isSearching) {
-        BackHandler(onBack = onExitSearchingMode)
-    }
+    val searchingBackProgress = rememberPredictiveBackProgress(
+        enabled = isSearching,
+        onBack = onExitSearchingMode,
+    )
 
     val headerContent = @Composable {
         Row(
@@ -464,6 +467,7 @@ fun LibraryAlbumsScreen(
             }
         }
         CenterAlignedTopAppBar(
+            modifier = Modifier.predictiveBackExit(searchingBackProgress),
             title = {
                 if (isSearching) {
                     TextField(

@@ -2,7 +2,6 @@ package com.maloy.muzza.ui.screens.playlist
 
 import android.annotation.SuppressLint
 import android.content.Intent
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -140,6 +139,8 @@ import com.maloy.muzza.ui.component.shimmer.ListItemPlaceHolder
 import com.maloy.muzza.ui.component.shimmer.PlaylistAlbumItemPlaceHolder
 import com.maloy.muzza.ui.component.shimmer.ShimmerHost
 import com.maloy.muzza.ui.component.shimmer.TextPlaceholder
+import com.maloy.muzza.ui.component.predictiveBackExit
+import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
 import com.maloy.muzza.ui.menu.YouTubePlaylistMenuInPlaylistScreen
 import com.maloy.muzza.ui.menu.YouTubeSongMenu
 import com.maloy.muzza.ui.menu.YouTubeSongSelectionMenu
@@ -326,11 +327,10 @@ fun OnlinePlaylistScreen(
         isSearching = false
         query = TextFieldValue("")
     }
-    if (inSelectMode) {
-        BackHandler(onBack = onExitSelectionMode)
-    } else if (isSearching) {
-        BackHandler(onBack = onExitSearchingMode)
-    }
+    val selectionBackProgress = rememberPredictiveBackProgress(
+        enabled = inSelectMode || isSearching,
+        onBack = { if (inSelectMode) onExitSelectionMode() else onExitSearchingMode() },
+    )
 
     BoxWithConstraints(
         modifier = Modifier
@@ -951,6 +951,7 @@ fun OnlinePlaylistScreen(
             }
         )
         CenterAlignedTopAppBar(
+            modifier = Modifier.predictiveBackExit(selectionBackProgress),
             title = {
                 if (inSelectMode) {
                     Text(pluralStringResource(R.plurals.n_selected, selection.size, selection.size))

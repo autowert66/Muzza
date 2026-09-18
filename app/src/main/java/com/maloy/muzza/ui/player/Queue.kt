@@ -3,7 +3,6 @@ package com.maloy.muzza.ui.player
 import android.annotation.SuppressLint
 import android.text.format.Formatter
 import android.widget.Toast
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,7 +33,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import com.maloy.muzza.ui.component.PredictiveBackAlertDialog
+import com.maloy.muzza.ui.component.predictiveBackExit
+import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -62,6 +63,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -149,9 +151,10 @@ fun Queue(
         inSelectMode = false
         selection.clear()
     }
-    if (inSelectMode) {
-        BackHandler(onBack = onExitSelectionMode)
-    }
+    val selectionBackProgress = rememberPredictiveBackProgress(
+        enabled = inSelectMode,
+        onBack = onExitSelectionMode,
+    )
 
     var showDetailsDialog by remember { mutableStateOf(false) }
     if (showDetailsDialog) {
@@ -192,7 +195,7 @@ fun Queue(
     }
 
     if (showSleepTimerDialog) {
-        AlertDialog(
+        PredictiveBackAlertDialog(
             properties = DialogProperties(usePlatformDefaultWidth = false),
             onDismissRequest = { showSleepTimerDialog = false },
             icon = {
@@ -672,8 +675,49 @@ fun Queue(
                     modifier = Modifier
                         .height(ListItemHeight)
                         .padding(horizontal = 6.dp)
+                        .graphicsLayer {
+                            alpha = if (inSelectMode) selectionBackProgress.value else 1f
+                        }
                 ) {
-                    if (inSelectMode) {
+                    Column(
+                        modifier = Modifier
+                            .padding(horizontal = 6.dp)
+                            .weight(1f)
+                    ) {
+                        queueTitleText?.let { queueTitle ->
+                            Text(
+                                text = queueTitle,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = joinByBullet(
+                            pluralStringResource(
+                                R.plurals.n_song,
+                                queueWindows.size,
+                                queueWindows.size
+                            ), makeTimeString(queueLength * 1000L)
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                if (inSelectMode) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .height(ListItemHeight)
+                            .padding(horizontal = 6.dp)
+                            .predictiveBackExit(selectionBackProgress)
+                    ) {
                         IconButton(onClick = onExitSelectionMode) {
                             Icon(
                                 painter = painterResource(R.drawable.close),
@@ -699,35 +743,6 @@ fun Queue(
                                     selection.addAll(queueWindows.map { it.uid.hashCode() })
                                 }
                             }
-                        )
-                    } else {
-                        Column(
-                            modifier = Modifier
-                                .padding(horizontal = 6.dp)
-                                .weight(1f)
-                        ) {
-                            queueTitleText?.let { queueTitle ->
-                                Text(
-                                    text = queueTitle,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-
-                        Text(
-                            text = joinByBullet(
-                                pluralStringResource(
-                                    R.plurals.n_song,
-                                    queueWindows.size,
-                                    queueWindows.size
-                                ), makeTimeString(queueLength * 1000L)
-                            ),
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -835,7 +850,7 @@ fun DetailsDialog(
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
     val currentFormat by playerConnection.currentFormat.collectAsState(initial = null)
 
-    AlertDialog(
+    PredictiveBackAlertDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false),
         onDismissRequest = onDismiss,
         icon = {

@@ -1,6 +1,5 @@
 package com.maloy.muzza.ui.screens.artist
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
@@ -61,6 +60,8 @@ import com.maloy.muzza.ui.component.LazyColumnScrollbar
 import com.maloy.muzza.ui.component.LocalMenuState
 import com.maloy.muzza.ui.component.SongListItem
 import com.maloy.muzza.ui.component.SortHeader
+import com.maloy.muzza.ui.component.predictiveBackExit
+import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
 import com.maloy.muzza.ui.menu.SongMenu
 import com.maloy.muzza.ui.menu.SongSelectionMenu
 import com.maloy.muzza.ui.utils.backToMain
@@ -106,9 +107,10 @@ fun ArtistSongsScreen(
         inSelectMode = false
         selection.clear()
     }
-    if (inSelectMode) {
-        BackHandler(onBack = onExitSelectionMode)
-    }
+    val selectionBackProgress = rememberPredictiveBackProgress(
+        enabled = inSelectMode,
+        onBack = onExitSelectionMode,
+    )
 
     LaunchedEffect(songIndex) {
         selection.fastForEachReversed { songId ->
@@ -233,6 +235,7 @@ fun ArtistSongsScreen(
         )
 
         CenterAlignedTopAppBar(
+            modifier = Modifier.predictiveBackExit(selectionBackProgress),
             title = {
                 if (inSelectMode) {
                     Text(pluralStringResource(R.plurals.n_selected, selection.size, selection.size))

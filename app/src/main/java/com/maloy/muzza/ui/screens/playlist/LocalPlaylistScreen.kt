@@ -6,7 +6,6 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -148,6 +147,8 @@ import com.maloy.muzza.ui.component.LocalMenuState
 import com.maloy.muzza.ui.component.SongListItem
 import com.maloy.muzza.ui.component.SortHeader
 import com.maloy.muzza.ui.component.TextFieldDialog
+import com.maloy.muzza.ui.component.predictiveBackExit
+import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
 import com.maloy.muzza.ui.menu.PlaylistMenu
 import com.maloy.muzza.ui.menu.SongMenu
 import com.maloy.muzza.ui.menu.SongSelectionMenu
@@ -243,11 +244,10 @@ fun LocalPlaylistScreen(
         isSearching = false
         query = TextFieldValue("")
     }
-    if (inSelectMode) {
-        BackHandler(onBack = onExitSelectionMode)
-    } else if (isSearching) {
-        BackHandler(onBack = onExitSearchingMode)
-    }
+    val selectionBackProgress = rememberPredictiveBackProgress(
+        enabled = inSelectMode || isSearching,
+        onBack = { if (inSelectMode) onExitSelectionMode() else onExitSearchingMode() },
+    )
 
     val mutableSongs = remember { mutableStateListOf<PlaylistSong>() }
 
@@ -725,6 +725,7 @@ fun LocalPlaylistScreen(
             }
         )
         CenterAlignedTopAppBar(
+            modifier = Modifier.predictiveBackExit(selectionBackProgress),
             title = {
                 if (inSelectMode) {
                     Text(pluralStringResource(R.plurals.n_selected, selection.size, selection.size))

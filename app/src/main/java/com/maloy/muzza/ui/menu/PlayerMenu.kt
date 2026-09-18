@@ -29,7 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
-import androidx.compose.material3.AlertDialog
+import com.maloy.muzza.ui.component.PredictiveBackAlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -169,7 +169,7 @@ fun PlayerMenu(
     val sliderStyle by rememberEnumPreference(SliderStyleKey, SliderStyle.DEFAULT)
 
     if (showSleepTimerDialog) {
-        AlertDialog(
+        PredictiveBackAlertDialog(
             properties = DialogProperties(usePlatformDefaultWidth = false),
             onDismissRequest = { showSleepTimerDialog = false },
             icon = {
@@ -817,7 +817,7 @@ fun TempoPitchDialog(
     }
     val sliderStyle by rememberEnumPreference(SliderStyleKey, SliderStyle.DEFAULT)
 
-    AlertDialog(
+    PredictiveBackAlertDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false),
         onDismissRequest = onDismiss,
         title = {

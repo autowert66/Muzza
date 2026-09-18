@@ -1,6 +1,5 @@
 package com.maloy.muzza.ui.screens.playlist
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -110,6 +109,8 @@ import com.maloy.muzza.extensions.move
 import com.maloy.muzza.extensions.toMediaItemWithPlaylist
 import com.maloy.muzza.ui.component.HideOnScrollFAB
 import com.maloy.muzza.ui.component.LazyColumnScrollbar
+import com.maloy.muzza.ui.component.predictiveBackExit
+import com.maloy.muzza.ui.component.rememberPredictiveBackProgress
 import com.maloy.muzza.ui.menu.AutoPlaylistMenu
 import com.maloy.muzza.ui.menu.SongSelectionMenu
 import com.maloy.muzza.ui.utils.backToMain
@@ -181,11 +182,10 @@ fun TopPlaylistScreen(
         isSearching = false
         searchQuery = TextFieldValue("")
     }
-    if (inSelectMode) {
-        BackHandler(onBack = onExitSelectionMode)
-    } else if (isSearching) {
-        BackHandler(onBack = onExitSearchingMode)
-    }
+    val selectionBackProgress = rememberPredictiveBackProgress(
+        enabled = inSelectMode || isSearching,
+        onBack = { if (inSelectMode) onExitSelectionMode() else onExitSearchingMode() },
+    )
 
 
     LaunchedEffect(inSelectMode) {
@@ -662,6 +662,7 @@ fun TopPlaylistScreen(
         )
         if (inSelectMode) {
             CenterAlignedTopAppBar(
+                modifier = Modifier.predictiveBackExit(selectionBackProgress),
                 title = {
                     Text(pluralStringResource(R.plurals.n_selected, selection.size, selection.size))
                 },
@@ -709,6 +710,7 @@ fun TopPlaylistScreen(
             )
         } else {
             CenterAlignedTopAppBar(
+                modifier = Modifier.predictiveBackExit(selectionBackProgress),
                 title = {
                     if (isSearching) {
                         TextField(
