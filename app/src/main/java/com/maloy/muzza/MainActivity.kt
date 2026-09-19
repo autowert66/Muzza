@@ -199,13 +199,11 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var listenTogetherManager: com.maloy.muzza.listentogether.ListenTogetherManager
 
-    private var playerConnection: PlayerConnection? = null
-    private var playerConnectionSnapshot by mutableStateOf<PlayerConnection?>(null)
+    private var playerConnection by mutableStateOf<PlayerConnection?>(null)
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             if (service is MusicBinder) {
                 playerConnection = PlayerConnection(this@MainActivity, service, database, lifecycleScope)
-                playerConnectionSnapshot = playerConnection
                 listenTogetherManager.setPlayerConnection(playerConnection)
             }
         }
@@ -213,6 +211,7 @@ class MainActivity : ComponentActivity() {
         override fun onServiceDisconnected(name: ComponentName?) {
             listenTogetherManager.setPlayerConnection(null)
             playerConnection?.dispose()
+            playerConnection = null
         }
     }
 
@@ -268,7 +267,6 @@ class MainActivity : ComponentActivity() {
             unbindService(serviceConnection)
             playerConnection?.dispose()
             playerConnection = null
-            playerConnectionSnapshot = null
         }
     }
 
