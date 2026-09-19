@@ -549,6 +549,10 @@ class MusicService : MediaLibraryService(),
             .setBitmapLoader(CoilBitmapLoader(this, scope))
             .build()
         player.repeatMode = dataStore.get(RepeatModeKey, REPEAT_MODE_OFF)
+        // The player and its media session are fully wired at this point. Signal readiness so
+        // consumers waiting on isPlayerReady (PlayerConnection attachment, persistent-queue
+        // restore) stop suspending forever.
+        playerInitialized.value = true
 
         val sessionToken = SessionToken(this, ComponentName(this, MusicService::class.java))
         val controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
