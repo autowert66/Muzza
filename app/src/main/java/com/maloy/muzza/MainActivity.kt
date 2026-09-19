@@ -8,6 +8,7 @@ import android.content.Intent.ACTION_SEARCH
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.graphics.drawable.BitmapDrawable
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -69,6 +70,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -179,6 +181,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import java.net.URLDecoder
 import javax.inject.Inject
@@ -615,69 +619,97 @@ class MainActivity : ComponentActivity() {
                     var sharedSong: SongItem? by remember {
                         mutableStateOf(null)
                     }
-                    DisposableEffect(Unit) {
-                        val listener = Consumer<Intent> { intent ->
-                            val uri =
-                                intent.data ?: intent.extras?.getString(Intent.EXTRA_TEXT)?.toUri()
-                                ?: return@Consumer
-                            val listenCode = uri.getQueryParameter("code")
-                                ?: uri.getQueryParameter("room")
-                                ?: uri.pathSegments.getOrNull(1)
-                            val isListenLink = uri.pathSegments.firstOrNull() == "listen" || uri.host?.equals("listen", ignoreCase = true) == true
-                            if (!listenCode.isNullOrBlank() && isListenLink) {
-                                val username = dataStore.get(ListenTogetherUsernameKey, "").ifBlank { "Guest" }
-                                listenTogetherManager.joinRoom(listenCode, username)
-                                return@Consumer
+                    val handleIntent: suspend (Uri) -> Unit = handler@ { uri ->
+                        val listenCode = uri.getQueryParameter("code")
+                            ?: uri.getQueryParameter("room")
+                            ?: uri.pathSegments.getOrNull(1)
+                        val isListenLink = uri.pathSegments.firstOrNull() == "listen" || uri.host?.equals("listen", ignoreCase = true) == true
+                        if (!listenCode.isNullOrBlank() && isListenLink) {
+                            val username = dataStore.get(ListenTogetherUsernameKey, "").ifBlank { "Guest" }
+                            listenTogetherManager.joinRoom(listenCode, username)
+                            return@handler
+                        }
+                        when (val path = uri.pathSegments.firstOrNull()) {
+                            "playlist" -> uri.getQueryParameter("list")?.let { playlistId ->
+                                if (playlistId.startsWith("OLAK5uy_")) {
+                                    withContext(Dispatchers.IO) {
+                                        YouTube.albumSongs(playlistId)
+                                    }.onSuccess { songs ->
+                                        songs.firstOrNull()?.album?.id?.let { browseId ->
+                                            navController.navigate("album/$browseId")
+                                        }
+                                    }.onFailure {
+                                        reportException(it)
+                                    }
+                                } else {
+                                    navController.navigate("online_playlist/$playlistId")
+                                }
                             }
-                            when (val path = uri.pathSegments.firstOrNull()) {
-                                "playlist" -> uri.getQueryParameter("list")?.let { playlistId ->
-                                    if (playlistId.startsWith("OLAK5uy_")) {
-                                        coroutineScope.launch {
-                                            YouTube.albumSongs(playlistId).onSuccess { songs ->
-                                                songs.firstOrNull()?.album?.id?.let { browseId ->
-                                                    navController.navigate("album/$browseId")
-                                                }
-                                            }.onFailure {
-                                                reportException(it)
-                                            }
-                                        }
-                                    } else {
-                                        navController.navigate("online_playlist/$playlistId")
-                                    }
-                                }
 
-                                "channel", "c" -> uri.lastPathSegment?.let { artistId ->
-                                    navController.navigate("artist/$artistId")
-                                }
+                            "channel", "c" -> uri.lastPathSegment?.let { artistId ->
+                                navController.navigate("artist/$artistId")
+                            }
 
-                                else -> when {
-                                    path == "watch" -> uri.getQueryParameter("v")
-                                    uri.host == "youtu.be" -> path
-                                    else -> null
-                                }?.let { videoId ->
-                                    coroutineScope.launch {
-                                        withContext(Dispatchers.IO) {
-                                            YouTube.queue(listOf(videoId))
-                                        }.onSuccess {
-                                            playerConnection?.playQueue(
-                                                YouTubeQueue(
-                                                    title = it.firstOrNull()?.title!!,
-                                                    endpoint = WatchEndpoint(
-                                                        videoId = it.firstOrNull()?.id
-                                                    ), preloadItem = it.firstOrNull()?.toMediaMetadata(),
-                                                    context = context
-                                                )
-                                            )
-                                        }.onFailure {
-                                            reportException(it)
-                                        }
-                                    }
+                            else -> when {
+                                path == "watch" -> uri.getQueryParameter("v")
+                                uri.host == "youtu.be" -> path
+                                else -> null
+                            }?.let { videoId ->
+                                // Only playback links need the service, which is bound in
+                                // onServiceConnected and can race a cold start / process restart.
+                                // Wait for it instead of silently dropping the link.
+                                val connection = playerConnection
+                                    ?: snapshotFlow { playerConnection }.filterNotNull().first()
+                                withContext(Dispatchers.IO) {
+                                    YouTube.queue(listOf(videoId))
+                                }.onSuccess {
+                                    connection.playQueue(
+                                        YouTubeQueue(
+                                            title = it.firstOrNull()?.title!!,
+                                            endpoint = WatchEndpoint(
+                                                videoId = it.firstOrNull()?.id
+                                            ), preloadItem = it.firstOrNull()?.toMediaMetadata(),
+                                            context = context
+                                        )
+                                    )
+                                }.onFailure {
+                                    reportException(it)
                                 }
                             }
                         }
+                    }
 
+                    var pendingIntentUrl by rememberSaveable { mutableStateOf<String?>(null) }
+                    DisposableEffect(Unit) {
+                        val listener = Consumer<Intent> { intent ->
+                            val uri = intent.data
+                                ?: intent.extras?.getString(Intent.EXTRA_TEXT)?.toUri()
+                                ?: return@Consumer
+                            val url = uri.toString()
+                            pendingIntentUrl = url
+                            coroutineScope.launch {
+                                handleIntent(uri)
+                                if (pendingIntentUrl == url) pendingIntentUrl = null
+                            }
+                        }
                         addOnNewIntentListener(listener)
                         onDispose { removeOnNewIntentListener(listener) }
+                    }
+
+                    LaunchedEffect(Unit) {
+                        // A link left undispatched by a previous composition (rotation while the
+                        // service was still binding) is carried over and retried. Otherwise the
+                        // starting intent is only handled on a genuine launch, not on recreation,
+                        // where it is redelivered via onNewIntent.
+                        val startingUri = intent?.data
+                            ?: intent?.extras?.getString(Intent.EXTRA_TEXT)?.toUri()
+                        val uri = pendingIntentUrl?.toUri()
+                            ?: startingUri?.takeIf { savedInstanceState == null }
+                            ?: return@LaunchedEffect
+                        val url = uri.toString()
+                        pendingIntentUrl = url
+                        handleIntent(uri)
+                        if (pendingIntentUrl == url) pendingIntentUrl = null
                     }
 
                     CompositionLocalProvider(
