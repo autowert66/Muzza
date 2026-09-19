@@ -199,13 +199,12 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var listenTogetherManager: com.maloy.muzza.listentogether.ListenTogetherManager
 
-    private var playerConnection: PlayerConnection? = null
-    private var playerConnectionSnapshot by mutableStateOf<PlayerConnection?>(null)
+    private var playerConnection by mutableStateOf<PlayerConnection?>(null)
+    private var isBound = false
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             if (service is MusicBinder) {
                 playerConnection = PlayerConnection(this@MainActivity, service, database, lifecycleScope)
-                playerConnectionSnapshot = playerConnection
                 listenTogetherManager.setPlayerConnection(playerConnection)
             }
         }
@@ -213,6 +212,7 @@ class MainActivity : ComponentActivity() {
         override fun onServiceDisconnected(name: ComponentName?) {
             listenTogetherManager.setPlayerConnection(null)
             playerConnection?.dispose()
+            playerConnection = null
         }
     }
 
@@ -238,16 +238,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startService(Intent(this, MusicService::class.java))
-        } else {
-            startService(Intent(this, MusicService::class.java))
+        startService(Intent(this, MusicService::class.java))
+        if (!isBound) {
+            isBound = bindService(
+                Intent(this, MusicService::class.java),
+                serviceConnection,
+                BIND_AUTO_CREATE
+            )
         }
-        bindService(
-            Intent(this, MusicService::class.java),
-            serviceConnection,
-            BIND_AUTO_CREATE
-        )
     }
 
     override fun onStop() {
@@ -255,21 +253,26 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        val stopMusic = isFinishing &&
+                dataStore.get(StopMusicOnTaskClearKey, false) &&
+                playerConnection?.isPlaying?.value == true
+
         if (isFinishing) {
             listenTogetherManager.disconnect()
         }
-        super.onDestroy()
-        if (dataStore.get(
-                StopMusicOnTaskClearKey,
-                false
-            ) && playerConnection?.isPlaying?.value == true && isFinishing
-        ) {
-            stopService(Intent(this, MusicService::class.java))
+        listenTogetherManager.setPlayerConnection(null)
+        if (isBound) {
             unbindService(serviceConnection)
-            playerConnection?.dispose()
-            playerConnection = null
-            playerConnectionSnapshot = null
+            isBound = false
         }
+        playerConnection?.dispose()
+        playerConnection = null
+
+        if (stopMusic) {
+            stopService(Intent(this, MusicService::class.java))
+        }
+
+        super.onDestroy()
     }
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)

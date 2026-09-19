@@ -38,7 +38,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PlayerConnection(
-    context: Context,
+    private val context: Context,
     binder: MusicBinder,
     val database: MusicDatabase,
     scope: CoroutineScope,
@@ -119,6 +119,7 @@ class PlayerConnection(
     private var playerCollectionJob: kotlinx.coroutines.Job? = null
 
     init {
+        instance = this
         playerCollectionJob = scope.launch {
             service.playerFlow.collect { newPlayer ->
                 if (newPlayer != null && newPlayer != attachedPlayer) {
@@ -302,46 +303,32 @@ class PlayerConnection(
     }
 
     fun dispose() {
-        instance = null
+        if (instance === this) instance = null
         playerCollectionJob?.cancel()
         playerCollectionJob = null
         attachedPlayer?.removeListener(this)
         attachedPlayer = null
     }
 
+    override fun onEvents(player: Player, events: Player.Events) {
+        if (events.containsAny(
+                Player.EVENT_PLAYBACK_STATE_CHANGED,
+                Player.EVENT_PLAY_WHEN_READY_CHANGED,
+                Player.EVENT_MEDIA_ITEM_TRANSITION
+            )) {
+            sendStateChangedBroadcast()
+        }
+    }
+
+    private fun sendStateChangedBroadcast() {
+        context.sendBroadcast(Intent(ACTION_STATE_CHANGED).apply {
+            setPackage(context.packageName)
+        })
+    }
+
     companion object {
         @Volatile
         var instance: PlayerConnection? = null
             private set
-    }
-
-    init {
-        instance = this
-        val currentPlayer = player
-        val broadcastListener = object : Player.Listener {
-            override fun onEvents(player: Player, events: Player.Events) {
-                if (events.containsAny(
-                        Player.EVENT_PLAYBACK_STATE_CHANGED,
-                        Player.EVENT_PLAY_WHEN_READY_CHANGED,
-                        Player.EVENT_MEDIA_ITEM_TRANSITION
-                    )) {
-                    sendStateChangedBroadcast(context)
-                }
-            }
-        }
-
-        scope.launch {
-            service.playerFlow.collect { newPlayer ->
-                currentPlayer.removeListener(broadcastListener)
-                newPlayer?.addListener(broadcastListener)
-            }
-        }
-        currentPlayer.addListener(broadcastListener)
-    }
-
-    private fun sendStateChangedBroadcast(context: Context) {
-        context.sendBroadcast(Intent(ACTION_STATE_CHANGED).apply {
-            setPackage(context.packageName)
-        })
     }
 }
