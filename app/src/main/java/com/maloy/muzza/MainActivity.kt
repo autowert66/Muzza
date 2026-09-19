@@ -679,18 +679,23 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    var pendingIntentUrl by rememberSaveable { mutableStateOf<String?>(null) }
                     DisposableEffect(Unit) {
                         val listener = Consumer<Intent> { intent ->
                             val uri = intent.data
                                 ?: intent.extras?.getString(Intent.EXTRA_TEXT)?.toUri()
                                 ?: return@Consumer
-                            coroutineScope.launch { handleIntent(uri) }
+                            val url = uri.toString()
+                            pendingIntentUrl = url
+                            coroutineScope.launch {
+                                handleIntent(uri)
+                                if (pendingIntentUrl == url) pendingIntentUrl = null
+                            }
                         }
                         addOnNewIntentListener(listener)
                         onDispose { removeOnNewIntentListener(listener) }
                     }
 
-                    var pendingIntentUrl by rememberSaveable { mutableStateOf<String?>(null) }
                     LaunchedEffect(Unit) {
                         // A link left undispatched by a previous composition (rotation while the
                         // service was still binding) is carried over and retried. Otherwise the
@@ -701,9 +706,10 @@ class MainActivity : ComponentActivity() {
                         val uri = pendingIntentUrl?.toUri()
                             ?: startingUri?.takeIf { savedInstanceState == null }
                             ?: return@LaunchedEffect
-                        pendingIntentUrl = uri.toString()
+                        val url = uri.toString()
+                        pendingIntentUrl = url
                         handleIntent(uri)
-                        pendingIntentUrl = null
+                        if (pendingIntentUrl == url) pendingIntentUrl = null
                     }
 
                     CompositionLocalProvider(
