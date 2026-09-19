@@ -1,7 +1,6 @@
 package com.maloy.muzza.playback
 
 import android.content.Context
-import android.content.Intent
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -12,7 +11,6 @@ import androidx.media3.common.Player.REPEAT_MODE_OFF
 import androidx.media3.common.Player.STATE_ENDED
 import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
-import com.maloy.muzza.MusicWidget.Companion.ACTION_STATE_CHANGED
 import com.maloy.muzza.constants.TranslateLyricsKey
 import com.maloy.muzza.db.MusicDatabase
 import com.maloy.muzza.db.entities.LyricsEntity.Companion.LYRICS_NOT_FOUND
@@ -119,7 +117,6 @@ class PlayerConnection(
     private var playerCollectionJob: kotlinx.coroutines.Job? = null
 
     init {
-        instance = this
         playerCollectionJob = scope.launch {
             service.playerFlow.collect { newPlayer ->
                 if (newPlayer != null && newPlayer != attachedPlayer) {
@@ -303,32 +300,9 @@ class PlayerConnection(
     }
 
     fun dispose() {
-        if (instance === this) instance = null
         playerCollectionJob?.cancel()
         playerCollectionJob = null
         attachedPlayer?.removeListener(this)
         attachedPlayer = null
-    }
-
-    override fun onEvents(player: Player, events: Player.Events) {
-        if (events.containsAny(
-                Player.EVENT_PLAYBACK_STATE_CHANGED,
-                Player.EVENT_PLAY_WHEN_READY_CHANGED,
-                Player.EVENT_MEDIA_ITEM_TRANSITION
-            )) {
-            sendStateChangedBroadcast()
-        }
-    }
-
-    private fun sendStateChangedBroadcast() {
-        context.sendBroadcast(Intent(ACTION_STATE_CHANGED).apply {
-            setPackage(context.packageName)
-        })
-    }
-
-    companion object {
-        @Volatile
-        var instance: PlayerConnection? = null
-            private set
     }
 }
