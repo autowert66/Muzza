@@ -615,69 +615,82 @@ class MainActivity : ComponentActivity() {
                     var sharedSong: SongItem? by remember {
                         mutableStateOf(null)
                     }
-                    DisposableEffect(Unit) {
-                        val listener = Consumer<Intent> { intent ->
-                            val uri =
-                                intent.data ?: intent.extras?.getString(Intent.EXTRA_TEXT)?.toUri()
-                                ?: return@Consumer
-                            val listenCode = uri.getQueryParameter("code")
-                                ?: uri.getQueryParameter("room")
-                                ?: uri.pathSegments.getOrNull(1)
-                            val isListenLink = uri.pathSegments.firstOrNull() == "listen" || uri.host?.equals("listen", ignoreCase = true) == true
-                            if (!listenCode.isNullOrBlank() && isListenLink) {
-                                val username = dataStore.get(ListenTogetherUsernameKey, "").ifBlank { "Guest" }
-                                listenTogetherManager.joinRoom(listenCode, username)
-                                return@Consumer
-                            }
-                            when (val path = uri.pathSegments.firstOrNull()) {
-                                "playlist" -> uri.getQueryParameter("list")?.let { playlistId ->
-                                    if (playlistId.startsWith("OLAK5uy_")) {
-                                        coroutineScope.launch {
-                                            YouTube.albumSongs(playlistId).onSuccess { songs ->
-                                                songs.firstOrNull()?.album?.id?.let { browseId ->
-                                                    navController.navigate("album/$browseId")
-                                                }
-                                            }.onFailure {
-                                                reportException(it)
-                                            }
-                                        }
-                                    } else {
-                                        navController.navigate("online_playlist/$playlistId")
-                                    }
-                                }
-
-                                "channel", "c" -> uri.lastPathSegment?.let { artistId ->
-                                    navController.navigate("artist/$artistId")
-                                }
-
-                                else -> when {
-                                    path == "watch" -> uri.getQueryParameter("v")
-                                    uri.host == "youtu.be" -> path
-                                    else -> null
-                                }?.let { videoId ->
+                    val handleIntent: (Intent?) -> Unit = handler@ { rawIntent ->
+                        val uri =
+                            rawIntent?.data ?: rawIntent?.extras?.getString(Intent.EXTRA_TEXT)?.toUri()
+                            ?: return@handler
+                        val listenCode = uri.getQueryParameter("code")
+                            ?: uri.getQueryParameter("room")
+                            ?: uri.pathSegments.getOrNull(1)
+                        val isListenLink = uri.pathSegments.firstOrNull() == "listen" || uri.host?.equals("listen", ignoreCase = true) == true
+                        if (!listenCode.isNullOrBlank() && isListenLink) {
+                            val username = dataStore.get(ListenTogetherUsernameKey, "").ifBlank { "Guest" }
+                            listenTogetherManager.joinRoom(listenCode, username)
+                            return@handler
+                        }
+                        when (val path = uri.pathSegments.firstOrNull()) {
+                            "playlist" -> uri.getQueryParameter("list")?.let { playlistId ->
+                                if (playlistId.startsWith("OLAK5uy_")) {
                                     coroutineScope.launch {
-                                        withContext(Dispatchers.IO) {
-                                            YouTube.queue(listOf(videoId))
-                                        }.onSuccess {
-                                            playerConnection?.playQueue(
-                                                YouTubeQueue(
-                                                    title = it.firstOrNull()?.title!!,
-                                                    endpoint = WatchEndpoint(
-                                                        videoId = it.firstOrNull()?.id
-                                                    ), preloadItem = it.firstOrNull()?.toMediaMetadata(),
-                                                    context = context
-                                                )
-                                            )
+                                        YouTube.albumSongs(playlistId).onSuccess { songs ->
+                                            songs.firstOrNull()?.album?.id?.let { browseId ->
+                                                navController.navigate("album/$browseId")
+                                            }
                                         }.onFailure {
                                             reportException(it)
                                         }
                                     }
+                                } else {
+                                    navController.navigate("online_playlist/$playlistId")
+                                }
+                            }
+
+                            "channel", "c" -> uri.lastPathSegment?.let { artistId ->
+                                navController.navigate("artist/$artistId")
+                            }
+
+                            else -> when {
+                                path == "watch" -> uri.getQueryParameter("v")
+                                uri.host == "youtu.be" -> path
+                                else -> null
+                            }?.let { videoId ->
+                                coroutineScope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        YouTube.queue(listOf(videoId))
+                                    }.onSuccess {
+                                        playerConnection?.playQueue(
+                                            YouTubeQueue(
+                                                title = it.firstOrNull()?.title!!,
+                                                endpoint = WatchEndpoint(
+                                                    videoId = it.firstOrNull()?.id
+                                                ), preloadItem = it.firstOrNull()?.toMediaMetadata(),
+                                                context = context
+                                            )
+                                        )
+                                    }.onFailure {
+                                        reportException(it)
+                                    }
                                 }
                             }
                         }
+                    }
 
+                    DisposableEffect(Unit) {
+                        val listener = Consumer<Intent> { handleIntent(it) }
                         addOnNewIntentListener(listener)
                         onDispose { removeOnNewIntentListener(listener) }
+                    }
+
+                    var initialIntentHandled by rememberSaveable { mutableStateOf(false) }
+                    LaunchedEffect(playerConnection) {
+                        if (initialIntentHandled || savedInstanceState != null) return@LaunchedEffect
+                        val hasLink = intent?.data != null ||
+                                intent?.extras?.getString(Intent.EXTRA_TEXT) != null
+                        // Deep links require the bound service; playerConnection is created in
+                        // onServiceConnected, which races the first composition on a cold start.
+                        if (hasLink && playerConnection == null) return@LaunchedEffect
+                        initialIntentHandled = true
+                        handleIntent(intent)
                     }
 
                     CompositionLocalProvider(
