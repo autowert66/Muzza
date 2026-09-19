@@ -7,14 +7,20 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.widget.RemoteViews
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
 import coil.imageLoader
 import coil.request.ImageRequest
-import com.maloy.muzza.playback.PlayerConnection
+import com.google.common.util.concurrent.ListenableFuture
+import com.maloy.muzza.constants.MediaSessionConstants
+import com.maloy.muzza.playback.MusicService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -29,6 +35,7 @@ class MusicWidget : AppWidgetProvider() {
         appWidgetManager: AppWidgetManager,
         appWidgetIds: IntArray
     ) {
+        ensureController(context)
         appWidgetIds.forEach { appWidgetId ->
             updateWidget(context, appWidgetManager, appWidgetId)
         }
@@ -36,48 +43,29 @@ class MusicWidget : AppWidgetProvider() {
     }
 
     override fun onEnabled(context: Context) {
+        ensureController(context)
         startProgressUpdater(context)
     }
 
     override fun onDisabled(context: Context) {
         stopProgressUpdater()
+        releaseController()
     }
 
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
-        when (intent.action) {
-            ACTION_PLAY_PAUSE -> {
-                PlayerConnection.instance?.togglePlayPause()
-                abortBroadcast()
-                updateAllWidgets(context)
-            }
-            ACTION_PREV -> {
-                PlayerConnection.instance?.seekToPrevious()
-                abortBroadcast()
-                updateAllWidgets(context)
-            }
-            ACTION_NEXT -> {
-                PlayerConnection.instance?.seekToNext()
-                abortBroadcast()
-                updateAllWidgets(context)
-            }
-            ACTION_SHUFFLE -> {
-                PlayerConnection.instance?.toggleShuffle()
-                abortBroadcast()
-                updateAllWidgets(context)
-            }
-            ACTION_LIKE -> {
-                PlayerConnection.instance?.toggleLike()
-                abortBroadcast()
-                updateAllWidgets(context)
-            }
+        when (val action = intent.action) {
+            ACTION_PLAY_PAUSE,
+            ACTION_PREV,
+            ACTION_NEXT,
+            ACTION_SHUFFLE,
+            ACTION_LIKE,
             ACTION_REPLAY -> {
-                PlayerConnection.instance?.toggleReplayMode()
-                abortBroadcast()
-                updateAllWidgets(context)
-            }
-            ACTION_STATE_CHANGED, ACTION_UPDATE_PROGRESS -> {
-                updateAllWidgets(context)
+                val pendingResult = goAsync()
+                performAction(context, action) {
+                    updateAllWidgets(context)
+                    pendingResult.finish()
+                }
             }
         }
     }
@@ -101,8 +89,92 @@ class MusicWidget : AppWidgetProvider() {
         const val ACTION_SHUFFLE = "com.maloy.muzza.ACTION_SHUFFLE"
         const val ACTION_LIKE = "com.maloy.muzza.ACTION_LIKE"
         const val ACTION_REPLAY = "com.maloy.muzza.ACTION_REPLAY"
-        const val ACTION_STATE_CHANGED = "com.maloy.muzza.ACTION_STATE_CHANGED"
-        const val ACTION_UPDATE_PROGRESS = "com.maloy.muzza.ACTION_UPDATE_PROGRESS"
+
+        @Volatile
+        private var appContext: Context? = null
+        private var controllerFuture: ListenableFuture<MediaController>? = null
+        private var controller: MediaController? = null
+
+        private val controllerListener = object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                appContext?.let { updateAllWidgets(it) }
+            }
+        }
+
+        private fun ensureController(context: Context, onReady: (MediaController?) -> Unit = {}) {
+            val app = context.applicationContext
+            appContext = app
+
+            controller?.let {
+                onReady(it)
+                return
+            }
+
+            val pending = controllerFuture
+            if (pending != null && !pending.isDone) {
+                pending.addListener(
+                    { onReady(controller) },
+                    ContextCompat.getMainExecutor(app)
+                )
+                return
+            }
+            if (pending != null) {
+                controllerFuture = null
+            }
+
+            val future = MediaController.Builder(
+                app,
+                SessionToken(app, ComponentName(app, MusicService::class.java))
+            ).buildAsync()
+            controllerFuture = future
+            future.addListener(Runnable {
+                if (controllerFuture !== future) return@Runnable
+                try {
+                    val created = future.get()
+                    created.addListener(controllerListener)
+                    controller = created
+                    updateAllWidgets(app)
+                    onReady(created)
+                } catch (e: Exception) {
+                    controllerFuture = null
+                    onReady(null)
+                }
+            }, ContextCompat.getMainExecutor(app))
+        }
+
+        private fun releaseController() {
+            controller?.removeListener(controllerListener)
+            controller = null
+            controllerFuture?.let { MediaController.releaseFuture(it) }
+            controllerFuture = null
+        }
+
+        private fun performAction(
+            context: Context,
+            action: String,
+            onDone: () -> Unit,
+        ) {
+            ensureController(context) { c ->
+                if (c == null) {
+                    onDone()
+                    return@ensureController
+                }
+                when (action) {
+                    ACTION_PLAY_PAUSE -> if (c.isPlaying) c.pause() else c.play()
+                    ACTION_PREV -> if (c.currentPosition > 3000 || !c.hasPreviousMediaItem()) {
+                        c.seekTo(0)
+                    } else {
+                        c.seekToPreviousMediaItem()
+                    }
+
+                    ACTION_NEXT -> c.seekToNextMediaItem()
+                    ACTION_SHUFFLE -> c.sendCustomCommand(MediaSessionConstants.CommandToggleShuffle, Bundle.EMPTY)
+                    ACTION_LIKE -> c.sendCustomCommand(MediaSessionConstants.CommandToggleLike, Bundle.EMPTY)
+                    ACTION_REPLAY -> c.sendCustomCommand(MediaSessionConstants.CommandToggleRepeatMode, Bundle.EMPTY)
+                }
+                onDone()
+            }
+        }
 
         fun updateAllWidgets(context: Context) {
             val appWidgetManager = AppWidgetManager.getInstance(context)
@@ -118,32 +190,32 @@ class MusicWidget : AppWidgetProvider() {
             appWidgetId: Int,
         ) {
             val views = RemoteViews(context.packageName, R.layout.widget_music)
-            val playerConnection = PlayerConnection.instance
-            val player = playerConnection?.player
+            val controller = controller
+            val metadata = controller?.mediaMetadata
 
-            player?.let { it ->
-                views.setTextViewText(R.id.widget_track_title, it.mediaMetadata.title)
-                views.setTextViewText(R.id.widget_artist, it.mediaMetadata.artist)
-                val playPauseIcon = if (it.playWhenReady) R.drawable.pause else R.drawable.play
+            if (controller != null && controller.currentMediaItem != null && metadata != null) {
+                views.setTextViewText(R.id.widget_track_title, metadata.title)
+                views.setTextViewText(R.id.widget_artist, metadata.artist ?: metadata.subtitle)
+                val playPauseIcon = if (controller.playWhenReady) R.drawable.pause else R.drawable.play
                 views.setImageViewResource(R.id.widget_play_pause, playPauseIcon)
-                val shuffleIcon = if (it.shuffleModeEnabled) R.drawable.shuffle_on else R.drawable.shuffle
+                val shuffleIcon = if (controller.shuffleModeEnabled) R.drawable.shuffle_on else R.drawable.shuffle
                 views.setImageViewResource(R.id.widget_shuffle, shuffleIcon)
                 val likeIcon = R.drawable.favorite
                 views.setImageViewResource(R.id.widget_like, likeIcon)
-                if (it.repeatMode == Player.REPEAT_MODE_ONE) {
+                if (controller.repeatMode == Player.REPEAT_MODE_ONE) {
                     views.setInt(R.id.widget_play_pause, "setColorFilter", context.getColor(R.color.light_blue_50))
                 } else {
                     views.setInt(R.id.widget_play_pause, "setColorFilter", context.getColor(android.R.color.transparent))
                 }
-                val currentPos = formatTime(it.currentPosition)
-                val duration = formatTime(it.duration)
+                val currentPos = formatTime(controller.currentPosition)
+                val duration = formatTime(controller.duration)
                 views.setTextViewText(R.id.widget_current_time, currentPos)
                 views.setTextViewText(R.id.widget_total_time, duration)
-                val progress = if (it.duration > 0) {
-                    (it.currentPosition * 100 / it.duration).toInt()
+                val progress = if (controller.duration > 0) {
+                    (controller.currentPosition * 100 / controller.duration).toInt()
                 } else 0
                 views.setProgressBar(R.id.widget_progress, 100, progress, false)
-                val thumbnailUrl = it.mediaMetadata.artworkUri?.toString()
+                val thumbnailUrl = metadata.artworkUri?.toString()
                 if (!thumbnailUrl.isNullOrEmpty()) {
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
@@ -173,6 +245,7 @@ class MusicWidget : AppWidgetProvider() {
 
             appWidgetManager.updateAppWidget(appWidgetId, views)
         }
+
         private fun getBroadcastPendingIntent(context: Context, action: String): PendingIntent {
             val intent = Intent(context, MusicWidget::class.java).apply {
                 this.action = action
