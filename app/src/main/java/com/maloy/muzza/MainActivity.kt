@@ -175,11 +175,13 @@ import com.maloy.muzza.utils.reportException
 import com.maloy.muzza.utils.updateLanguage
 import com.maloy.muzza.utils.urlEncode
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -188,6 +190,7 @@ import java.net.URLDecoder
 import javax.inject.Inject
 import java.util.Locale
 import kotlin.time.Duration.Companion.days
+import kotlin.time.Duration.Companion.seconds
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -655,20 +658,31 @@ class MainActivity : ComponentActivity() {
                                 uri.host == "youtu.be" -> path
                                 else -> null
                             }?.let { videoId ->
-                                // Only playback links need the service, which is bound in
-                                // onServiceConnected and can race a cold start / process restart.
-                                // Wait for it instead of silently dropping the link.
-                                val connection = playerConnection
-                                    ?: snapshotFlow { playerConnection }.filterNotNull().first()
                                 withContext(Dispatchers.IO) {
                                     YouTube.queue(listOf(videoId))
-                                }.onSuccess {
+                                }.onSuccess { queue ->
+                                    // Only playback links need the service, which is bound in
+                                    // onServiceConnected and can race a cold start / process restart.
+                                    // Wait for it instead of silently dropping the link, but do not
+                                    // wait forever if it never connects.
+                                    val connection = playerConnection
+                                        ?: withTimeoutOrNull(PlayerConnectionTimeout) {
+                                            snapshotFlow { playerConnection }.filterNotNull().first()
+                                        }
+                                    if (connection == null) {
+                                        reportException(
+                                            IllegalStateException(
+                                                "Player connection unavailable for deep link $uri"
+                                            )
+                                        )
+                                        return@onSuccess
+                                    }
                                     connection.playQueue(
                                         YouTubeQueue(
-                                            title = it.firstOrNull()?.title!!,
+                                            title = queue.firstOrNull()?.title!!,
                                             endpoint = WatchEndpoint(
-                                                videoId = it.firstOrNull()?.id
-                                            ), preloadItem = it.firstOrNull()?.toMediaMetadata(),
+                                                videoId = queue.firstOrNull()?.id
+                                            ), preloadItem = queue.firstOrNull()?.toMediaMetadata(),
                                             context = context
                                         )
                                     )
@@ -679,37 +693,60 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    // A link can be dispatched from the starting intent (cold start) or from
+                    // addOnNewIntent (warm start). Both record the URL here before dispatching so a
+                    // recreation that cancels the in-flight coroutine retries it instead of losing
+                    // it, and clear it only if it is still the newest link.
                     var pendingIntentUrl by rememberSaveable { mutableStateOf<String?>(null) }
+                    // The starting intent is redelivered on every recreation, so remember which one
+                    // was already handled. That avoids re-dispatching it on a configuration change,
+                    // while a genuinely new intent (e.g. a deep link after process death, which also
+                    // arrives with a non-null savedInstanceState) still gets through.
+                    var handledStartingIntentUrl by rememberSaveable { mutableStateOf<String?>(null) }
+
+                    val dispatchIntent: suspend (Uri) -> Unit = { uri ->
+                        val url = uri.toString()
+                        pendingIntentUrl = url
+                        try {
+                            handleIntent(uri)
+                            if (pendingIntentUrl == url) pendingIntentUrl = null
+                        } catch (e: CancellationException) {
+                            // Leave pendingIntentUrl set so the recreated composition retries it.
+                            throw e
+                        } catch (e: Exception) {
+                            reportException(e)
+                            if (pendingIntentUrl == url) pendingIntentUrl = null
+                        }
+                    }
+
                     DisposableEffect(Unit) {
                         val listener = Consumer<Intent> { intent ->
                             val uri = intent.data
                                 ?: intent.extras?.getString(Intent.EXTRA_TEXT)?.toUri()
                                 ?: return@Consumer
-                            val url = uri.toString()
-                            pendingIntentUrl = url
-                            coroutineScope.launch {
-                                handleIntent(uri)
-                                if (pendingIntentUrl == url) pendingIntentUrl = null
-                            }
+                            pendingIntentUrl = uri.toString()
+                            coroutineScope.launch { dispatchIntent(uri) }
                         }
                         addOnNewIntentListener(listener)
                         onDispose { removeOnNewIntentListener(listener) }
                     }
 
                     LaunchedEffect(Unit) {
-                        // A link left undispatched by a previous composition (rotation while the
-                        // service was still binding) is carried over and retried. Otherwise the
-                        // starting intent is only handled on a genuine launch, not on recreation,
-                        // where it is redelivered via onNewIntent.
                         val startingUri = intent?.data
                             ?: intent?.extras?.getString(Intent.EXTRA_TEXT)?.toUri()
-                        val uri = pendingIntentUrl?.toUri()
-                            ?: startingUri?.takeIf { savedInstanceState == null }
-                            ?: return@LaunchedEffect
-                        val url = uri.toString()
-                        pendingIntentUrl = url
-                        handleIntent(uri)
-                        if (pendingIntentUrl == url) pendingIntentUrl = null
+                        val pendingUri = pendingIntentUrl?.toUri()
+                        val uri = when {
+                            // A link left undispatched by a previous composition (rotation while
+                            // the service was still binding) is carried over and retried.
+                            pendingUri != null -> pendingUri
+                            // Otherwise handle the starting intent once per distinct link.
+                            startingUri != null && startingUri.toString() != handledStartingIntentUrl -> {
+                                handledStartingIntentUrl = startingUri.toString()
+                                startingUri
+                            }
+                            else -> return@LaunchedEffect
+                        }
+                        dispatchIntent(uri)
                     }
 
                     CompositionLocalProvider(
@@ -1208,6 +1245,9 @@ class MainActivity : ComponentActivity() {
         const val ACTION_HOME = "com.maloy.muzza.action.HOME"
         const val ACTION_EXPLORE = "com.maloy.muzza.action.EXPLORE"
         const val ACTION_LIBRARY = "com.maloy.muzza.action.LIBRARY"
+
+        // How long a playback deep link waits for the music service to bind before giving up.
+        private val PlayerConnectionTimeout = 15.seconds
     }
 }
 
