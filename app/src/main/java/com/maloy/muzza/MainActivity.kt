@@ -698,10 +698,8 @@ class MainActivity : ComponentActivity() {
                     // recreation that cancels the in-flight coroutine retries it instead of losing
                     // it, and clear it only if it is still the newest link.
                     var pendingIntentUrl by rememberSaveable { mutableStateOf<String?>(null) }
-                    // The starting intent is redelivered on every recreation, so remember which one
-                    // was already handled. That avoids re-dispatching it on a configuration change,
-                    // while a genuinely new intent (e.g. a deep link after process death, which also
-                    // arrives with a non-null savedInstanceState) still gets through.
+                    // The starting intent is redelivered on a configuration change, so remember
+                    // which one was already handled to avoid dispatching it twice.
                     var handledStartingIntentUrl by rememberSaveable { mutableStateOf<String?>(null) }
 
                     val dispatchIntent: suspend (Uri) -> Unit = { uri ->
@@ -732,8 +730,17 @@ class MainActivity : ComponentActivity() {
                     }
 
                     LaunchedEffect(Unit) {
-                        val startingUri = intent?.data
-                            ?: intent?.extras?.getString(Intent.EXTRA_TEXT)?.toUri()
+                        // Tapping the app in the recents screen relaunches the task with the intent
+                        // that originally started it (usually the deep link), flagged by the system
+                        // as launched from history. Ignore that intent so returning from the app
+                        // switcher does not replay the link.
+                        val launchedFromHistory =
+                            ((intent?.flags ?: 0) and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+                        val startingUri = if (launchedFromHistory) {
+                            null
+                        } else {
+                            intent?.data ?: intent?.extras?.getString(Intent.EXTRA_TEXT)?.toUri()
+                        }
                         val pendingUri = pendingIntentUrl?.toUri()
                         val uri = when {
                             // A link left undispatched by a previous composition (rotation while
