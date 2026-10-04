@@ -239,7 +239,11 @@ class MusicService : MediaLibraryService(),
         database.format(mediaMetadata?.id)
     }
 
+    // The audio session the enhancer is currently bound to. A LoudnessEnhancer is permanently
+    // attached to one AudioTrack session, so it must be released and rebuilt whenever media3
+    // hands us a new session id - see initializeLoudnessEnhancer().
     private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var loudnessEnhancerSessionId: Int = C.AUDIO_SESSION_ID_UNSET
     private var isNormalizationEnabled = false
     val playerVolume = MutableStateFlow(dataStore.get(PlayerVolumeKey, 1f).coerceIn(0f, 1f))
 
@@ -269,6 +273,10 @@ class MusicService : MediaLibraryService(),
     private lateinit var mediaSession: MediaLibrarySession
 
     private var isAudioEffectSessionOpened = false
+    // The session the system effects panel was told about. Reading player.audioSessionId at close
+    // time could close a different session than the one that was opened, leaving the original
+    // session with system effects still attached.
+    private var openedAudioEffectSessionId: Int = C.AUDIO_SESSION_ID_UNSET
 
     private var discordRpc: DiscordRPC? = null
 
@@ -612,19 +620,7 @@ class MusicService : MediaLibraryService(),
         }.collectLatest(scope) { settings ->
             player.volume = if (settings.muted) 0f else settings.volume
             isNormalizationEnabled = settings.normalizeAudio
-            try {
-                if (settings.normalizeAudio && settings.format?.loudnessDb != null) {
-                    var gain = (-settings.format.loudnessDb * 100).toInt()
-                    gain = gain.coerceIn(MIN_GAIN_MB, MAX_GAIN_MB)
-
-                    loudnessEnhancer?.setTargetGain(gain)
-                    loudnessEnhancer?.enabled = true
-                } else {
-                    loudnessEnhancer?.enabled = false
-                }
-            } catch (_: Exception) {
-                loudnessEnhancer?.enabled = false
-            }
+            applyLoudnessGain(settings.normalizeAudio, settings.format?.loudnessDb)
         }
 
         combine(
@@ -846,15 +842,60 @@ class MusicService : MediaLibraryService(),
     }
 
 
+    /**
+     * Rebuilds [loudnessEnhancer] so it is bound to the player's *current* audio session.
+     *
+     * A LoudnessEnhancer is permanently attached to the AudioTrack session it was created with, and
+     * media3 releases and recreates the AudioTrack on every flush (see DefaultAudioSink.flush()),
+     * so every repeat and every seek yields a new session id and an EVENT_AUDIO_SESSION_ID. Creating
+     * the effect only once left it bound to a destroyed session, and the failure path dropped the
+     * reference without releasing it, so a stale enabled effect survived while a new one was built.
+     * The result was normalization being applied through the wrong (or several) effect, which
+     * compounded across loops on repeat-one and was only cleared by a skip/seek.
+     *
+     * Session 0 (media3's AUDIO_SESSION_ID_UNSET) is skipped deliberately: no AudioTrack is bound
+     * yet, and session 0 is the global output mix, so an effect attached there would affect every
+     * app on the device.
+     */
     private fun initializeLoudnessEnhancer() {
+        val sessionId = if (::player.isInitialized) {
+            player.audioSessionId
+        } else {
+            C.AUDIO_SESSION_ID_UNSET
+        }
+
+        if (sessionId == C.AUDIO_SESSION_ID_UNSET) {
+            releaseLoudnessEnhancer()
+            return
+        }
+
+        if (loudnessEnhancer != null && loudnessEnhancerSessionId == sessionId) {
+            // Already bound to the session that is actually playing.
+            return
+        }
+
+        releaseLoudnessEnhancer()
         try {
-            if (loudnessEnhancer == null) {
-                loudnessEnhancer = LoudnessEnhancer(player.audioSessionId)
-            }
+            loudnessEnhancer = LoudnessEnhancer(sessionId)
+            loudnessEnhancerSessionId = sessionId
+            // A freshly created AudioEffect starts out enabled. Keep it inert until
+            // applyLoudnessGain() has a gain for this session, so an effect is never left running
+            // blind on a session we have not computed anything for yet.
             loudnessEnhancer?.enabled = false
         } catch (_: Exception) {
-            loudnessEnhancer = null
+            releaseLoudnessEnhancer()
         }
+    }
+
+    /**
+     * Disables and releases the enhancer, if any. Always releases before dropping the reference so
+     * a disabled/stale effect can never stay attached to a recycled audio session.
+     */
+    private fun releaseLoudnessEnhancer() {
+        runCatching { loudnessEnhancer?.enabled = false }
+        runCatching { loudnessEnhancer?.release() }
+        loudnessEnhancer = null
+        loudnessEnhancerSessionId = C.AUDIO_SESSION_ID_UNSET
     }
 
     private fun updateNotification() {
@@ -1073,21 +1114,25 @@ class MusicService : MediaLibraryService(),
 
     private fun openAudioEffectSession() {
         if (isAudioEffectSessionOpened) return
+        val sessionId = player.audioSessionId
+        if (sessionId == C.AUDIO_SESSION_ID_UNSET) return
         try {
             isAudioEffectSessionOpened = true
+            openedAudioEffectSessionId = sessionId
             if (isNormalizationEnabled) {
                 loudnessEnhancer?.enabled = true
             }
 
             sendBroadcast(
                 Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION).apply {
-                    putExtra(AudioEffect.EXTRA_AUDIO_SESSION, player.audioSessionId)
+                    putExtra(AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
                     putExtra(AudioEffect.EXTRA_PACKAGE_NAME, packageName)
                     putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
                 },
             )
         } catch (_: Exception) {
             isAudioEffectSessionOpened = false
+            openedAudioEffectSessionId = C.AUDIO_SESSION_ID_UNSET
         }
     }
 
@@ -1095,9 +1140,13 @@ class MusicService : MediaLibraryService(),
         if (!isAudioEffectSessionOpened) return
         isAudioEffectSessionOpened = false
         loudnessEnhancer?.enabled = false
+        // Close the session that was actually opened, not whatever the player reports now.
+        val sessionId = openedAudioEffectSessionId
+        openedAudioEffectSessionId = C.AUDIO_SESSION_ID_UNSET
+        if (sessionId == C.AUDIO_SESSION_ID_UNSET) return
         sendBroadcast(
             Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION).apply {
-                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, player.audioSessionId)
+                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
                 putExtra(AudioEffect.EXTRA_PACKAGE_NAME, packageName)
             },
         )
@@ -1108,19 +1157,35 @@ class MusicService : MediaLibraryService(),
             val normalizeAudio = dataStore.data.first()[AudioNormalizationKey] ?: true
             val format = currentFormat.first()
             isNormalizationEnabled = normalizeAudio
+            applyLoudnessGain(normalizeAudio, format?.loudnessDb)
+        }
+    }
 
-            try {
-                if (normalizeAudio && format?.loudnessDb != null) {
-                    var gain = (-format.loudnessDb * 100).toInt()
-                    gain = gain.coerceIn(MIN_GAIN_MB, MAX_GAIN_MB)
-                    loudnessEnhancer?.setTargetGain(gain)
-                    loudnessEnhancer?.enabled = true
-                } else {
-                    loudnessEnhancer?.enabled = false
-                }
-            } catch (_: Exception) {
-                loudnessEnhancer?.enabled = false
+    /**
+     * Applies the per-track loudness gain to the enhancer, but only while it is still bound to the
+     * session that is actually playing.
+     */
+    private fun applyLoudnessGain(normalizeAudio: Boolean, loudnessDb: Double?) {
+        val enhancer = loudnessEnhancer ?: return
+        if (!::player.isInitialized || loudnessEnhancerSessionId != player.audioSessionId) {
+            // The effect belongs to a session that has already been recycled; the next
+            // EVENT_AUDIO_SESSION_ID will rebuild it.
+            return
+        }
+
+        try {
+            if (normalizeAudio && loudnessDb != null) {
+                var gain = (-loudnessDb * 100).toInt()
+                gain = gain.coerceIn(MIN_GAIN_MB, MAX_GAIN_MB)
+                enhancer.setTargetGain(gain)
+                enhancer.enabled = true
+            } else {
+                enhancer.enabled = false
             }
+        } catch (_: Exception) {
+            // The session went away underneath us: drop the effect rather than retrying against a
+            // dead session, so the next one is built cleanly.
+            releaseLoudnessEnhancer()
         }
     }
 
@@ -1189,8 +1254,24 @@ class MusicService : MediaLibraryService(),
             }
         }
         if (events.contains(Player.EVENT_AUDIO_SESSION_ID)) {
+            // A new audio session invalidates any effect bound to the previous one.
             initializeLoudnessEnhancer()
             applyAudioNormalizationSettings()
+
+            // The session the system effects panel was told about is now stale; re-open for the new
+            // one so effects follow the AudioTrack instead of being stranded on a recycled id.
+            // Skipped when the opened session is already the current one, which happens whenever
+            // EVENT_PLAYBACK_STATE_CHANGED shares this batch and opened it a moment ago.
+            if (isAudioEffectSessionOpened &&
+                openedAudioEffectSessionId != this@MusicService.player.audioSessionId
+            ) {
+                closeAudioEffectSession()
+                if (player.playbackState == Player.STATE_BUFFERING ||
+                    player.playbackState == Player.STATE_READY
+                ) {
+                    openAudioEffectSession()
+                }
+            }
         }
         if (events.containsAny(EVENT_TIMELINE_CHANGED, EVENT_POSITION_DISCONTINUITY)) {
             currentMediaMetadata.value = player.currentMetadata
@@ -1676,9 +1757,7 @@ class MusicService : MediaLibraryService(),
             discordRpc?.closeRPC()
         }
         discordRpc = null
-        loudnessEnhancer?.enabled = false
-        loudnessEnhancer?.release()
-        loudnessEnhancer = null
+        releaseLoudnessEnhancer()
         mediaSession.release()
         player.removeListener(this)
         player.removeListener(sleepTimer)
@@ -1834,6 +1913,13 @@ class MusicService : MediaLibraryService(),
 
         nextPlayer.addListener(this)
         nextPlayer.addListener(sleepTimer)
+
+        // The incoming player owns its own AudioTrack and therefore its own audio session. media3
+        // does not replay EVENT_AUDIO_SESSION_ID to listeners attached after the fact, so without
+        // this the enhancer stays bound to the outgoing player's session - which cleanupCrossfade()
+        // is about to release - and applyLoudnessGain() then no-ops until the next flush or seek.
+        initializeLoudnessEnhancer()
+        applyAudioNormalizationSettings()
 
         sleepTimer.player = player
 
