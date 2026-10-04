@@ -44,6 +44,7 @@ import androidx.media3.common.Player.STATE_IDLE
 import androidx.media3.common.Timeline
 import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
@@ -176,12 +177,11 @@ import java.io.File
 import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
 import java.net.ConnectException
-import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
-import java.net.URL
 import java.net.UnknownHostException
 import java.time.LocalDateTime
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import kotlin.collections.buildSet
 import kotlin.time.Duration.Companion.milliseconds
@@ -443,6 +443,13 @@ class MusicService : MediaLibraryService(),
             }
         }
     )
+
+    // Written by the stream-URL prewarm/resolve on Dispatchers.IO and read by the data-source
+    // resolver on media3's loader thread, hence ConcurrentHashMap rather than HashMap.
+    private val resolvedStreamUrls = ConcurrentHashMap<String, Pair<String, Long>>()
+
+    // Keyed by media id, invalidated per song on media item transition.
+    private val playbackSources = ConcurrentHashMap<String, PlaybackSource>()
 
     inner class MusicBinder : Binder() {
         val service: MusicService
@@ -1133,6 +1140,13 @@ class MusicService : MediaLibraryService(),
             cacheRecoveredMediaIds.clear()
         }
 
+        // Re-read this song's DB facts and start resolving its stream URL ahead of the loader
+        // thread, so neither blocks playback on the way in.
+        mediaItem?.mediaId?.let { mediaId ->
+            playbackSources.remove(mediaId)
+            prewarmStreamUrl(mediaId)
+        }
+
         if (consecutivePlaybackErr > 0) {
             consecutivePlaybackErr--
         }
@@ -1370,27 +1384,18 @@ class MusicService : MediaLibraryService(),
             .setCacheWriteDataSinkFactory(null)
             .setFlags(FLAG_IGNORE_CACHE_ON_ERROR)
 
-    private suspend fun validateStreamUrl(url: String): Boolean {
-        return try {
-            withContext(Dispatchers.IO) {
-                val connection = URL(url).openConnection() as HttpURLConnection
-                connection.requestMethod = "HEAD"
-                connection.connectTimeout = 5000
-                connection.readTimeout = 5000
-                connection.connect()
-                val responseCode = connection.responseCode
-                val contentLength = connection.contentLength
-                connection.disconnect()
-
-                responseCode == 200 && contentLength > 1024
-            }
-        } catch (_: Exception) {
-            false
-        }
-    }
+    /**
+     * DB-derived facts that decide where a song's audio comes from: local file/content URI, or the
+     * expected byte length of a cached copy.
+     */
+    private data class PlaybackSource(
+        val isLocal: Boolean,
+        val localPath: String?,
+        val contentUri: String?,
+        val expectedLength: Long?,
+    )
 
     private fun createDataSourceFactory(): DataSource.Factory {
-        val songUrlCache = HashMap<String, Pair<String, Long>>()
         // DefaultDataSource wraps the caches rather than sitting inside them: it dispatches
         // file/content URIs to its own data sources and only forwards everything else (http(s),
         // and the cache-hit marker below) to the cache chain. Local media therefore bypasses the
@@ -1400,45 +1405,20 @@ class MusicService : MediaLibraryService(),
         ) { dataSpec ->
             val mediaId = dataSpec.key ?: error("No media id")
 
-            val isLocalSong = runBlocking(Dispatchers.IO) {
-                database.song(mediaId).firstOrNull()?.song?.isLocal == true
+            // Blocking by necessity (Resolver is synchronous), but a memoised lookup rather than a
+            // query: the lambda below is re-entered for every load task and every seek.
+            val source = playbackSource(mediaId)
+
+            if (source.isLocal) {
+                return@Factory localSourceUri(dataSpec, source)
             }
 
-            if (isLocalSong) {
-                val songPath = runBlocking(Dispatchers.IO) {
-                    database.song(mediaId).firstOrNull()?.song?.localPath
-                }
-
-                val contentUri = runBlocking(Dispatchers.IO) {
-                    database.song(mediaId).firstOrNull()?.song?.contentUri
-                }
-
-                return@Factory if (!contentUri.isNullOrEmpty()) {
-                    dataSpec.withUri(contentUri.toUri())
-                } else if (songPath != null) {
-                    try {
-                        val authority = "${packageName}.fileprovider"
-                        val fileUri = FileProvider.getUriForFile(
-                            this,
-                            authority,
-                            File(songPath)
-                        )
-                        dataSpec.withUri(fileUri)
-                    } catch (_: Exception) {
-                        dataSpec.withUri(Uri.fromFile(File(songPath)))
-                    }
-                } else {
-                    dataSpec
-                }
-            }
+            val expectedLength = source.expectedLength
 
             // A stream truncated mid-write (e.g. YouTube throttling) makes media3 record a
             // content length equal to the truncation point. That short length then permanently
             // fails every later open()/seek past it with POSITION_OUT_OF_RANGE. Drop such an
             // entry so it is re-fetched instead of erroring.
-            val expectedLength = runBlocking(Dispatchers.IO) {
-                database.format(mediaId).firstOrNull()?.contentLength
-            }
             if (expectedLength != null) {
                 val cachedLength = ContentMetadata.getContentLength(
                     playerCache.getContentMetadata(mediaId)
@@ -1451,10 +1431,7 @@ class MusicService : MediaLibraryService(),
             // Serve straight from the cache only when the whole resource is present. A partial entry
             // must resolve a stream URL; otherwise, when filling its holes, the cache would fall back
             // to the bare media-id URI and fail to open it.
-            if (expectedLength != null &&
-                (downloadCache.isCached(mediaId, 0, expectedLength) ||
-                    playerCache.isCached(mediaId, 0, expectedLength))
-            ) {
+            if (isFullyCached(mediaId, expectedLength)) {
                 scope.launch(Dispatchers.IO) { recoverSong(mediaId) }
                 // Media items use a scheme-less URI (just the media id), which DefaultDataSource
                 // would treat as a local file. Give it a scheme it forwards to the cache chain,
@@ -1463,82 +1440,150 @@ class MusicService : MediaLibraryService(),
             }
 
             // Reuse the already-resolved URL for this song until it expires. Without this, every
-            // cache-chunk open re-runs the whole player resolution (WEB_REMIX + PoToken), which
+            // load task re-runs the whole player resolution (WEB_REMIX + PoToken), which
             // multiplies YouTube requests and triggers its "not a bot" rate limiting on long queues.
-            songUrlCache[mediaId]?.takeIf { it.second > System.currentTimeMillis() }?.let { cached ->
-                return@Factory dataSpec.withUri(cached.first.toUri())
-                    .subrange(dataSpec.uriPositionOffset, CHUNK_LENGTH)
+            validStreamUrl(mediaId)?.let { cached ->
+                return@Factory dataSpec.withUri(cached.toUri())
             }
 
-            val playbackData = runBlocking(Dispatchers.IO) {
-                YTPlayerUtils.playerResponseForPlayback(
-                    mediaId,
-                    audioQuality = audioQuality,
-                    connectivityManager = connectivityManager,
-                )
-            }.getOrElse { throwable ->
-                when (throwable) {
-                    is PlaybackException -> throw throwable
-                    is ConnectException, is UnknownHostException -> {
-                        throw PlaybackException(
-                            getString(R.string.error_no_internet),
-                            throwable,
-                            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
-                        )
-                    }
+            return@Factory dataSpec.withUri(resolveStreamUrl(mediaId).toUri())
+        }
+    }
 
-                    is SocketTimeoutException -> {
-                        throw PlaybackException(
-                            getString(R.string.error_timeout),
-                            throwable,
-                            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
-                        )
-                    }
+    private fun localSourceUri(dataSpec: DataSpec, source: PlaybackSource): DataSpec {
+        if (!source.contentUri.isNullOrEmpty()) {
+            return dataSpec.withUri(source.contentUri.toUri())
+        }
+        val songPath = source.localPath ?: return dataSpec
+        return try {
+            val authority = "${packageName}.fileprovider"
+            val fileUri = FileProvider.getUriForFile(
+                this,
+                authority,
+                File(songPath)
+            )
+            dataSpec.withUri(fileUri)
+        } catch (_: Exception) {
+            dataSpec.withUri(Uri.fromFile(File(songPath)))
+        }
+    }
 
-                    else -> throw PlaybackException(
-                        getString(R.string.error_unknown),
+    private fun isFullyCached(mediaId: String, expectedLength: Long?): Boolean =
+        expectedLength != null &&
+            (downloadCache.isCached(mediaId, 0, expectedLength) ||
+                playerCache.isCached(mediaId, 0, expectedLength))
+
+    private fun validStreamUrl(mediaId: String): String? =
+        resolvedStreamUrls[mediaId]?.takeIf { it.second > System.currentTimeMillis() }?.first
+
+    /**
+     * Resolves a playable stream URL and memoises it until YouTube expires it. The caller's
+     * resolution normally reaches [resolvedStreamUrls] via [prewarmStreamUrl], off the loader
+     * thread; this blocking fallback only runs when the prewarm has not landed yet.
+     *
+     * Note there is deliberately no HEAD/validate round trip here: the URL comes from a
+     * successful `/player` response, which [YTPlayerUtils.playerResponseForPlayback] has already
+     * validated internally, and re-probing it blocked buffer refill for up to its 5s+5s timeouts.
+     */
+    private fun resolveStreamUrl(mediaId: String): String {
+        validStreamUrl(mediaId)?.let { return it }
+
+        val playbackData = runBlocking(Dispatchers.IO) {
+            YTPlayerUtils.playerResponseForPlayback(
+                mediaId,
+                audioQuality = audioQuality,
+                connectivityManager = connectivityManager,
+            )
+        }.getOrElse { throwable ->
+            when (throwable) {
+                is PlaybackException -> throw throwable
+                is ConnectException, is UnknownHostException -> {
+                    throw PlaybackException(
+                        getString(R.string.error_no_internet),
                         throwable,
-                        PlaybackException.ERROR_CODE_REMOTE_ERROR
+                        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
                     )
                 }
-            }
-            val isValidUrl = runBlocking(Dispatchers.IO) {
-                validateStreamUrl(playbackData.streamUrl)
-            }
 
-            if (!isValidUrl) {
-                throw PlaybackException(
-                    "Invalid stream URL",
-                    null,
-                    PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
-                )
-            }
-            val format = playbackData.format
-            database.query {
-                upsert(
-                    FormatEntity(
-                        id = mediaId,
-                        itag = format.itag,
-                        mimeType = format.mimeType.split(";")[0],
-                        codecs = format.mimeType.split("codecs=")[1].removeSurrounding("\""),
-                        bitrate = format.bitrate,
-                        sampleRate = format.audioSampleRate,
-                        contentLength = format.contentLength!!,
-                        loudnessDb = playbackData.audioConfig?.loudnessDb,
-                        perceptualLoudnessDb = playbackData.audioConfig?.perceptualLoudnessDb,
-                        playbackUrl = playbackData.playbackTracking?.videostatsPlaybackUrl?.baseUrl
+                is SocketTimeoutException -> {
+                    throw PlaybackException(
+                        getString(R.string.error_timeout),
+                        throwable,
+                        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
                     )
+                }
+
+                else -> throw PlaybackException(
+                    getString(R.string.error_unknown),
+                    throwable,
+                    PlaybackException.ERROR_CODE_REMOTE_ERROR
                 )
             }
-            scope.launch(Dispatchers.IO) { recoverSong(mediaId, playbackData) }
-            val streamUrl = playbackData.streamUrl
+        }
+        val format = playbackData.format
+        database.query {
+            upsert(
+                FormatEntity(
+                    id = mediaId,
+                    itag = format.itag,
+                    mimeType = format.mimeType.split(";")[0],
+                    codecs = format.mimeType.split("codecs=")[1].removeSurrounding("\""),
+                    bitrate = format.bitrate,
+                    sampleRate = format.audioSampleRate,
+                    contentLength = format.contentLength!!,
+                    loudnessDb = playbackData.audioConfig?.loudnessDb,
+                    perceptualLoudnessDb = playbackData.audioConfig?.perceptualLoudnessDb,
+                    playbackUrl = playbackData.playbackTracking?.videostatsPlaybackUrl?.baseUrl
+                )
+            )
+        }
+        scope.launch(Dispatchers.IO) { recoverSong(mediaId, playbackData) }
 
-            songUrlCache[mediaId] =
-                streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
-            playbackData.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.let {
-                playbackUrlCache[cacheKey(mediaId)] = it
-            }
-            return@Factory dataSpec.withUri(streamUrl.toUri()).subrange(dataSpec.uriPositionOffset, CHUNK_LENGTH)
+        val streamUrl = playbackData.streamUrl
+        resolvedStreamUrls[mediaId] =
+            streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
+        playbackData.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.let {
+            playbackUrlCache[cacheKey(mediaId)] = it
+        }
+        return streamUrl
+    }
+
+    /**
+     * DB facts for [mediaId], read once and reused.
+     *
+     * The resolver runs on media3's loader thread — one single-thread executor per media period —
+     * and re-enters it for every load task and every seek. Reading them inline there stalled
+     * buffer refill on a busy database, so they are memoised instead and refreshed on every media
+     * item transition (see [onMediaItemTransition]) to keep a song that was downloaded or
+     * resolved while it sat in the queue from being pinned to a stale answer.
+     */
+    private fun playbackSource(mediaId: String): PlaybackSource =
+        playbackSources[mediaId] ?: loadPlaybackSource(mediaId).also { playbackSources[mediaId] = it }
+
+    private fun loadPlaybackSource(mediaId: String): PlaybackSource {
+        val song = runBlocking(Dispatchers.IO) { database.song(mediaId).firstOrNull()?.song }
+        return PlaybackSource(
+            isLocal = song?.isLocal == true,
+            localPath = song?.localPath,
+            contentUri = song?.contentUri,
+            expectedLength = runBlocking(Dispatchers.IO) {
+                database.format(mediaId).firstOrNull()?.contentLength
+            },
+        )
+    }
+
+    /**
+     * Resolves a stream URL for [mediaId] ahead of the player asking for one, so that the loader
+     * thread finds [resolvedStreamUrls] populated and never has to block on the `/player` request.
+     * No-op for local songs and for songs that are already fully cached, which need no URL at all.
+     */
+    private fun prewarmStreamUrl(mediaId: String) {
+        if (resolvedStreamUrls.containsKey(mediaId)) return
+        scope.launch(Dispatchers.IO) {
+            if (resolvedStreamUrls.containsKey(mediaId)) return@launch
+            val source = playbackSource(mediaId)
+            if (source.isLocal || isFullyCached(mediaId, source.expectedLength)) return@launch
+            runCatching { resolveStreamUrl(mediaId) }
         }
     }
 
@@ -2004,7 +2049,6 @@ class MusicService : MediaLibraryService(),
 
         const val CHANNEL_ID = "music_channel_01"
         const val NOTIFICATION_ID = 888
-        const val CHUNK_LENGTH = 512 * 1024L
         const val PERSISTENT_QUEUE_FILE = "persistent_queue.data"
         private const val CACHE_URI_SCHEME = "muzza-cache"
         private const val MAX_GAIN_MB = 800
