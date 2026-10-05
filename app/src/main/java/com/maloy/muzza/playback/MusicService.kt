@@ -181,7 +181,10 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.time.LocalDateTime
 import java.util.Collections
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import javax.inject.Inject
 import kotlin.collections.buildSet
 import kotlin.time.Duration.Companion.milliseconds
@@ -460,6 +463,15 @@ class MusicService : MediaLibraryService(),
     // known to carry no related endpoint. Both are read/written from Dispatchers.IO.
     private val recoveringSongIds = ConcurrentHashMap.newKeySet<String>()
     private val noRelatedSongsIds = ConcurrentHashMap.newKeySet<String>()
+
+    // Single-flight guard for stream URL resolution, so the resolver and the prewarm cannot both
+    // fire a /player request for the same song. Keyed by media id; entries are dropped once done
+    // (see forgetResolveRequest) so an expired URL can be resolved again.
+    private val resolveRequests = ConcurrentHashMap<String, CompletableFuture<String>>()
+
+    private val resolveExecutor = Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "StreamUrlResolve").apply { isDaemon = true }
+    }
 
     inner class MusicBinder : Binder() {
         val service: MusicService
@@ -960,16 +972,15 @@ class MusicService : MediaLibraryService(),
             }
             if (mediaId in noRelatedSongsIds) return
             if (!database.hasRelatedSongs(mediaId)) {
-                val relatedEndpoint =
-                    YouTube.next(WatchEndpoint(videoId = mediaId)).getOrNull()?.relatedEndpoint
-                        ?: run {
-                            // Remember the miss: the rows that would satisfy hasRelatedSongs are
-                            // only written below, so a song whose response carries no
-                            // relatedEndpoint never satisfies the check and the pair is re-requested
-                            // on every future resolution, forever.
-                            noRelatedSongsIds.add(mediaId)
-                            return
-                        }
+                // Only a definitive "this song has no related endpoint" is worth remembering. A
+                // failed request must not be blacklisted, or one transient network error would cost
+                // this song its related songs for the rest of the session.
+                val nextResult = YouTube.next(WatchEndpoint(videoId = mediaId))
+                val relatedEndpoint = nextResult.getOrNull()?.relatedEndpoint
+                if (relatedEndpoint == null) {
+                    if (nextResult.isSuccess) noRelatedSongsIds.add(mediaId)
+                    return
+                }
                 val relatedPage = YouTube.related(relatedEndpoint).getOrNull() ?: return
                 database.query {
                     relatedPage.songs
@@ -1183,6 +1194,11 @@ class MusicService : MediaLibraryService(),
         // Re-read this song's DB facts and start resolving its stream URL ahead of the loader
         // thread, so neither blocks playback on the way in.
         mediaItem?.mediaId?.let { mediaId ->
+            // Facts are re-read once per song, but the caches keyed by media id are long-lived,
+            // so drop this song's stale entries here. Otherwise a song cached offline earlier in
+            // the session would still be treated as offline after its download was removed, and
+            // would never be registered in YouTube history again.
+            offlinePlaybackIds.remove(mediaId)
             playbackSources.remove(mediaId)
             prewarmStreamUrl(mediaId)
         }
@@ -1529,6 +1545,32 @@ class MusicService : MediaLibraryService(),
     private fun resolveStreamUrl(mediaId: String): String {
         validStreamUrl(mediaId)?.let { return it }
 
+        // Single-flight per media id. Two callers can arrive here concurrently: the resolver on
+        // the loader thread, and the prewarm kicked off from onMediaItemTransition. Without this
+        // both can observe a null cache and fire the same /player request twice, which is exactly
+        // what YouTube rate-limits. computeIfAbsent gives us one winner; the loser waits on the
+        // same future rather than starting its own request.
+        return try {
+            resolveRequests.computeIfAbsent(mediaId) {
+                CompletableFuture.supplyAsync({
+                    runBlocking(Dispatchers.IO) {
+                        fetchAndCacheStreamUrl(mediaId)
+                    }
+                }, resolveExecutor)
+            }.join().also { forgetResolveRequest(mediaId) }
+        } catch (e: CompletionException) {
+            // join() wraps whatever the resolution threw. Unwrap so callers still see the
+            // PlaybackException that fetchAndCacheStreamUrl mapped to a user-facing message.
+            forgetResolveRequest(mediaId)
+            throw (e.cause ?: e)
+        }
+    }
+
+    /**
+     * Performs the actual player resolution and memoises the result. Runs on [resolveExecutor]
+     * inside [resolveStreamUrl]'s single-flight, or directly from the prewarm.
+     */
+    private fun fetchAndCacheStreamUrl(mediaId: String): String {
         val playbackData = runBlocking(Dispatchers.IO) {
             YTPlayerUtils.playerResponseForPlayback(
                 mediaId,
@@ -1590,6 +1632,16 @@ class MusicService : MediaLibraryService(),
     }
 
     /**
+     * Drops a finished single-flight entry so the next resolution for this id can run again — the
+     * memoised URL has a finite lifetime, and without this the completed future would be returned
+     * forever once the URL expired.
+     */
+    private fun forgetResolveRequest(mediaId: String) {
+        val future = resolveRequests[mediaId] ?: return
+        if (future.isDone) resolveRequests.remove(mediaId, future)
+    }
+
+    /**
      * DB facts for [mediaId], read once and reused.
      *
      * The resolver runs on media3's loader thread — one single-thread executor per media period —
@@ -1621,9 +1673,12 @@ class MusicService : MediaLibraryService(),
     private fun prewarmStreamUrl(mediaId: String) {
         if (resolvedStreamUrls.containsKey(mediaId)) return
         scope.launch(Dispatchers.IO) {
+            forgetResolveRequest(mediaId)
             if (resolvedStreamUrls.containsKey(mediaId)) return@launch
             val source = playbackSource(mediaId)
             if (source.isLocal || isFullyCached(mediaId, source.expectedLength)) return@launch
+            // Goes through the same single-flight as the resolver, so a concurrent request from the
+            // loader thread joins this one instead of duplicating it.
             runCatching { resolveStreamUrl(mediaId) }
         }
     }
