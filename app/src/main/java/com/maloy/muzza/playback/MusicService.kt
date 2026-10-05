@@ -243,6 +243,15 @@ class MusicService : MediaLibraryService(),
     private var isNormalizationEnabled = false
     val playerVolume = MutableStateFlow(dataStore.get(PlayerVolumeKey, 1f).coerceIn(0f, 1f))
 
+    // Mirrored out of DataStore once instead of read at each use site. Both are consulted from
+    // the two playback callbacks that run on latency-sensitive threads — checkAndTrackSong on
+    // Dispatchers.Main every 2s, onPlaybackStatsReady on the media3 playback thread — and the
+    // dataStore.get() delegate is a blocking runBlocking(Dispatchers.IO) DataStore read.
+    private val pauseListenHistory =
+        MutableStateFlow(dataStore.get(PauseListenHistoryKey, false))
+    private val addPlayedSongsToHistory =
+        MutableStateFlow(dataStore.get(AddingPlayedSongsToYTMHistoryKey, true))
+
     val isMuted = MutableStateFlow(false)
 
     fun setMuted(muted: Boolean) {
@@ -364,7 +373,7 @@ class MusicService : MediaLibraryService(),
             if (progress >= 30f && !trackedSongs.contains(songId)) {
                 trackedSongs.add(songId)
 
-                if (!dataStore.get(PauseListenHistoryKey, false)) {
+                if (!pauseListenHistory.value) {
                     withContext(Dispatchers.IO) {
                         database.query {
                             incrementTotalPlayTime(songId, currentPosition)
@@ -382,21 +391,9 @@ class MusicService : MediaLibraryService(),
                     }
                 }
 
-                if (dataStore.get(AddingPlayedSongsToYTMHistoryKey, true) && !isLocal) {
+                if (addPlayedSongsToHistory.value && !isLocal && songId !in offlinePlaybackIds) {
                     withContext(Dispatchers.IO) {
-                        val playbackUrl = playbackUrlCache[cacheKey(songId)]
-                            ?: YTPlayerUtils
-                                .playerResponseForMetadata(songId, null)
-                                .getOrNull()
-                                ?.playbackTracking
-                                ?.videostatsPlaybackUrl
-                                ?.baseUrl
-
-                        if (playbackUrl != null) {
-                            YouTube.registerPlayback(null, playbackUrl).onFailure {
-                                reportException(it)
-                            }
-                        }
+                        registerYouTubeHistory(songId)
                     }
                 }
             }
@@ -450,6 +447,19 @@ class MusicService : MediaLibraryService(),
 
     // Keyed by media id, invalidated per song on media item transition.
     private val playbackSources = ConcurrentHashMap<String, PlaybackSource>()
+
+    /**
+     * Media ids whose audio came from local bytes (the download cache) rather than a resolved
+     * stream URL. Such a song has no videostats tracking URL, so registering it with YouTube
+     * history would mean fetching a player response purely to discard the result — see
+     * [registerYouTubeHistory]. Written from the resolver on the loader thread.
+     */
+    private val offlinePlaybackIds = ConcurrentHashMap.newKeySet<String>()
+
+    // Per-song bookkeeping for recoverSong: which ids already have one in flight, and which are
+    // known to carry no related endpoint. Both are read/written from Dispatchers.IO.
+    private val recoveringSongIds = ConcurrentHashMap.newKeySet<String>()
+    private val noRelatedSongsIds = ConcurrentHashMap.newKeySet<String>()
 
     inner class MusicBinder : Binder() {
         val service: MusicService
@@ -665,6 +675,17 @@ class MusicService : MediaLibraryService(),
                         }
                     }
                 }
+            }
+
+        dataStore.data
+            .map { prefs ->
+                (prefs[PauseListenHistoryKey] ?: false) to
+                    (prefs[AddingPlayedSongsToYTMHistoryKey] ?: true)
+            }
+            .distinctUntilChanged()
+            .collect(scope) { (pauseHistory, addToHistory) ->
+                pauseListenHistory.value = pauseHistory
+                addPlayedSongsToHistory.value = addToHistory
             }
 
         dataStore.data
@@ -916,36 +937,55 @@ class MusicService : MediaLibraryService(),
         mediaId: String,
         playbackData: YTPlayerUtils.PlaybackData? = null
     ) {
-        val song = database.song(mediaId).first()
-        val mediaMetadata = withContext(Dispatchers.Main) {
-            player.findNextMediaItemById(mediaId)?.metadata
-        } ?: return
-        val duration = song?.song?.duration?.takeIf { it != -1 }
-            ?: mediaMetadata.duration.takeIf { it != -1 }
-            ?: (playbackData?.videoDetails ?: YTPlayerUtils.playerResponseForMetadata(mediaId)
-                .getOrNull()?.videoDetails)?.lengthSeconds?.toInt()
-            ?: -1
-        database.query {
-            if (song == null) insert(mediaMetadata.copy(duration = duration))
-            else if (song.song.duration == -1) update(song.song.copy(duration = duration))
-        }
-        if (!database.hasRelatedSongs(mediaId)) {
-            val relatedEndpoint =
-                YouTube.next(WatchEndpoint(videoId = mediaId)).getOrNull()?.relatedEndpoint
-                    ?: return
-            val relatedPage = YouTube.related(relatedEndpoint).getOrNull() ?: return
+        // The resolver calls this on every fast-path resolution and can re-enter it many times
+        // while one song loads, with no per-mediaId bookkeeping of its own. Without this guard a
+        // single song fires a duplicate YouTube.next()/YouTube.related() pair per invocation.
+        if (!recoveringSongIds.add(mediaId)) return
+        try {
+            val song = database.song(mediaId).first()
+            val mediaMetadata = withContext(Dispatchers.Main) {
+                player.findNextMediaItemById(mediaId)?.metadata
+            } ?: return
+            // Unlike the YouTube history registration, this fallback genuinely needs the network: there is
+            // no local source for a duration that neither the DB row nor the media item carries.
+            // It fires only when both are -1, and playbackData (streaming path) covers the rest.
+            val duration = song?.song?.duration?.takeIf { it != -1 }
+                ?: mediaMetadata.duration.takeIf { it != -1 }
+                ?: (playbackData?.videoDetails ?: YTPlayerUtils.playerResponseForMetadata(mediaId)
+                    .getOrNull()?.videoDetails)?.lengthSeconds?.toInt()
+                ?: -1
             database.query {
-                relatedPage.songs
-                    .map(SongItem::toMediaMetadata)
-                    .onEach(::insert)
-                    .map {
-                        RelatedSongMap(
-                            songId = mediaId,
-                            relatedSongId = it.id
-                        )
-                    }
-                    .forEach(::insert)
+                if (song == null) insert(mediaMetadata.copy(duration = duration))
+                else if (song.song.duration == -1) update(song.song.copy(duration = duration))
             }
+            if (mediaId in noRelatedSongsIds) return
+            if (!database.hasRelatedSongs(mediaId)) {
+                val relatedEndpoint =
+                    YouTube.next(WatchEndpoint(videoId = mediaId)).getOrNull()?.relatedEndpoint
+                        ?: run {
+                            // Remember the miss: the rows that would satisfy hasRelatedSongs are
+                            // only written below, so a song whose response carries no
+                            // relatedEndpoint never satisfies the check and the pair is re-requested
+                            // on every future resolution, forever.
+                            noRelatedSongsIds.add(mediaId)
+                            return
+                        }
+                val relatedPage = YouTube.related(relatedEndpoint).getOrNull() ?: return
+                database.query {
+                    relatedPage.songs
+                        .map(SongItem::toMediaMetadata)
+                        .onEach(::insert)
+                        .map {
+                            RelatedSongMap(
+                                songId = mediaId,
+                                relatedSongId = it.id
+                            )
+                        }
+                        .forEach(::insert)
+                }
+            }
+        } finally {
+            recoveringSongIds.remove(mediaId)
         }
     }
 
@@ -1432,6 +1472,7 @@ class MusicService : MediaLibraryService(),
             // must resolve a stream URL; otherwise, when filling its holes, the cache would fall back
             // to the bare media-id URI and fail to open it.
             if (isFullyCached(mediaId, expectedLength)) {
+                offlinePlaybackIds.add(mediaId)
                 scope.launch(Dispatchers.IO) { recoverSong(mediaId) }
                 // Media items use a scheme-less URI (just the media id), which DefaultDataSource
                 // would treat as a local file. Give it a scheme it forwards to the cache chain,
@@ -1614,7 +1655,7 @@ class MusicService : MediaLibraryService(),
             eventTime.timeline.getWindow(eventTime.windowIndex, Timeline.Window()).mediaItem
 
         if (isCrossfading) {
-            if (playbackStats.totalPlayTimeMs >= 30000 && !dataStore.get(PauseListenHistoryKey, false)) {
+            if (playbackStats.totalPlayTimeMs >= 30000 && !pauseListenHistory.value) {
                 if (!trackedSongs.contains(mediaItem.mediaId)) {
                     database.query {
                         incrementTotalPlayTime(mediaItem.mediaId, playbackStats.totalPlayTimeMs)
@@ -1634,7 +1675,7 @@ class MusicService : MediaLibraryService(),
             return
         }
 
-        if (playbackStats.totalPlayTimeMs >= 30000 && !dataStore.get(PauseListenHistoryKey, false)) {
+        if (playbackStats.totalPlayTimeMs >= 30000 && !pauseListenHistory.value) {
             database.query {
                 incrementTotalPlayTime(mediaItem.mediaId, playbackStats.totalPlayTimeMs)
                 try {
@@ -1649,29 +1690,31 @@ class MusicService : MediaLibraryService(),
                 }
             }
         }
-        if (playbackStats.totalPlayTimeMs >= 30000 && dataStore.get(
-                AddingPlayedSongsToYTMHistoryKey, true
-            )
-        ) {
+        if (playbackStats.totalPlayTimeMs >= 30000 && addPlayedSongsToHistory.value) {
             scope.launch(Dispatchers.IO) {
-                val playbackUrl =
-                    playbackUrlCache[cacheKey(mediaItem.mediaId)]
-                        ?: YTPlayerUtils
-                            .playerResponseForMetadata(mediaItem.mediaId, null)
-                            .getOrNull()
-                            ?.playbackTracking
-                            ?.videostatsPlaybackUrl
-                            ?.baseUrl
-                if (playbackUrl == null) {
-                    Timber.tag(TAG)
-                        .w("No playback tracking URL available for $mediaItem.mediaId, skipping YouTube history registration")
-                    return@launch
-                }
-                YouTube.registerPlayback(null, playbackUrl).onFailure {
-                    reportException(it)
-                }
+                registerYouTubeHistory(mediaItem.mediaId)
             }
         }
+    }
+
+    /**
+     * Adds [mediaId] to the YouTube Music play history, if a videostats tracking URL for it is
+     * already known.
+     *
+     * Deliberately does not resolve a player response to obtain a missing URL. [playbackUrlCache]
+     * is only populated when a stream URL was resolved, so for a song served from the download
+     * cache there is no tracking URL to find — and asking YouTube for one costs a full /player
+     * request plus a PoToken WebView round trip, mid-song, purely to throw the result away. That
+     * measured 8.6s on a metered connection and is unbounded on a lossy one, where requests hang
+     * rather than failing. Songs that actually streamed always have the URL and are unaffected.
+     */
+    private suspend fun registerYouTubeHistory(mediaId: String) {
+        val playbackUrl = playbackUrlCache[cacheKey(mediaId)]
+        if (playbackUrl == null) {
+            Timber.tag(TAG).d("No playback tracking URL for $mediaId, skipping YouTube history registration")
+            return
+        }
+        YouTube.registerPlayback(null, playbackUrl).onFailure { reportException(it) }
     }
 
     private fun saveQueueToDisk() {
