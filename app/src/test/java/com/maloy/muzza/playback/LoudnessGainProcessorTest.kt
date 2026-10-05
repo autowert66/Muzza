@@ -33,6 +33,13 @@ class LoudnessGainProcessorTest {
         samples.forEach { input.putShort(it) }
         input.flip()
         processor.queueInput(input)
+        // The AudioProcessor contract requires the input position to advance by the bytes
+        // consumed. DefaultAudioSink re-queues the same buffer while hasRemaining() is true, so
+        // failing to consume it spins the audio thread forever.
+        assertFalse(
+            "queueInput must consume the whole input buffer",
+            input.hasRemaining(),
+        )
         val result = processor.getOutput()
         val shorts = ShortArray(result.remaining() / 2)
         for (i in shorts.indices) shorts[i] = result.getShort()
