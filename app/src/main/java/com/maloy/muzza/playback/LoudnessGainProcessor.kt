@@ -53,12 +53,32 @@ class LoudnessGainProcessor : BaseAudioProcessor() {
 
     override fun queueInput(inputBuffer: ByteBuffer) {
         val data = inputBuffer.order(ByteOrder.nativeOrder())
-        val shorts = data.asShortBuffer()
-        val count = shorts.remaining()
+        val byteCount = data.remaining()
+        val out = replaceOutputBuffer(byteCount).order(ByteOrder.nativeOrder())
 
-        val out = replaceOutputBuffer(count * 2).order(ByteOrder.nativeOrder())
-        for (i in 0 until count) {
-            val scaled = (shorts.get(i) * amplitude).toInt()
+        if (amplitude == 1f) {
+            // Unity gain: copy through rather than multiply every sample. The relative put()
+            // still consumes `data`, which the AudioProcessor contract requires.
+            //
+            // Guard the zero-length case: `replaceOutputBuffer(0)` returns the processor's
+            // internal buffer, which is the shared static AudioProcessor.EMPTY_BUFFER until a
+            // real buffer grows it. The pipeline's first getOutput() queues exactly that
+            // EMPTY_BUFFER before any audio has arrived, so `out` and `data` are the same
+            // instance and ByteBuffer.put(ByteBuffer) throws "The source buffer is this
+            // buffer" — a fatal renderer error that fails playback and skips the whole queue.
+            if (data.hasRemaining()) {
+                out.put(data)
+            }
+            out.flip()
+            return
+        }
+
+        // Relative reads, so `data`'s position advances as bytes are consumed. The
+        // AudioProcessor contract requires the input position to end at its limit; DefaultAudioSink
+        // re-queues the same buffer while hasRemaining() is true, so leaving it put would spin.
+        while (data.hasRemaining()) {
+            val sample = data.short.toInt()
+            val scaled = (sample * amplitude).toInt()
             // Saturate rather than wrap: a hot gain must not invert the waveform.
             out.putShort(scaled.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort())
         }

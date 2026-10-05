@@ -1964,6 +1964,12 @@ class MusicService : MediaLibraryService(),
         _playerFlow.value = player
         secondaryPlayer = null
 
+        // Re-derive from the player that is now primary. It was built with the crossfade rule
+        // (offload forced off), so this normally clears the flag; deriving it rather than assuming
+        // keeps the audio-effect gating correct for the new primary either way.
+        isOffloadActive = dataStore.get(AudioOffload, false) &&
+            !dataStore.get(CrossfadeEnabledKey, false)
+
         try {
             currentPlayer.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -2089,9 +2095,11 @@ class MusicService : MediaLibraryService(),
         player.apply {
             runBlocking {
                 val offload = dataStore.get(AudioOffload, false)
-                // The secondary crossfade player must not claim isOffloadActive, which tracks the
-                // primary. Inside runBlocking `this` is the CoroutineScope, hence the explicit arg.
-                applyOffload(offload, player)
+                val crossfade = dataStore.get(CrossfadeEnabledKey, false)
+                // Crossfade implies offload must be off, same as for the primary player. Applying
+                // the raw preference here would leave this player offloaded even though it exists
+                // to crossfade, and it becomes the primary in performCrossfadeSwap().
+                applyOffload(if (crossfade) false else offload, player)
                 skipSilenceEnabled = dataStore.get(SkipSilenceKey, false)
             }
         }

@@ -101,4 +101,23 @@ class LoudnessGainProcessorTest {
         val input = ShortArray(1024) { (it * 7 - 3000).toShort() }
         assertEquals(input.size, process(processor, input).size)
     }
+
+    @Test
+    fun `empty input at unity gain does not copy a buffer onto itself`() {
+        val processor = LoudnessGainProcessor()
+        processor.targetGainDb = 0f
+        assertTrue(
+            "processor should accept 16-bit PCM",
+            processor.configure(pcm16) != AudioFormat.NOT_SET,
+        )
+
+        // AudioProcessingPipeline queues the shared static AudioProcessor.EMPTY_BUFFER on its
+        // first getOutput(), before any real audio arrives. replaceOutputBuffer(0) hands back
+        // that same instance, so an unguarded out.put(data) throws "The source buffer is this
+        // buffer" and fails playback. queueInput must survive it and emit nothing.
+        val empty = AudioProcessor.EMPTY_BUFFER
+        processor.queueInput(empty)
+        assertFalse(empty.hasRemaining())
+        assertFalse("empty input must produce no output", processor.getOutput().hasRemaining())
+    }
 }
