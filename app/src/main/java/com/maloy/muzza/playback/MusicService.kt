@@ -248,6 +248,49 @@ class MusicService : MediaLibraryService(),
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var loudnessEnhancerSessionId: Int = C.AUDIO_SESSION_ID_UNSET
     private var isNormalizationEnabled = false
+
+    /**
+     * Offload-safe path for audio normalisation. Shared by both players, since each is built with
+     * [createRenderersFactory] and the gain is a property of the track, not of a player instance.
+     */
+    private val audioGainProcessor = LoudnessGainProcessor()
+
+    /**
+     * Whether audio offload is currently requested for [player].
+     *
+     * media3 1.7.1 exposes no getter for this (no `Player.isOffloadEnabled`, and
+     * `TrackSelectionParameters` does not surface the audio offload preferences), so the service
+     * mirrors its own preference here. This must stay in sync with every `setOffloadEnabled` call.
+     *
+     * It gates all `AudioEffect` use: an offloaded `AudioTrack` is rendered on a different thread
+     * than the effect chain, and audioflinger refuses to attach one — logging "effect Loudness
+     * Enhancer does not support offload flags" and then migrating the effect chain, which pauses,
+     * flushes and recreates the output stream (measured 444ms of silence). See [offload].
+     */
+    private var isOffloadActive = false
+
+    /**
+     * Whether audio effects may be attached to the current output.
+     *
+     * False while offload is requested: audioflinger cannot host an `AudioEffect` on an offloaded
+     * track, and merely *trying* costs a stream teardown. With no effect to host there is also no
+     * session to advertise, so the control-session broadcasts are skipped as well — they force the
+     * same effect-chain migration even without offload.
+     */
+    private val canUseAudioEffects: Boolean
+        get() = !isOffloadActive
+
+    /**
+     * Applies an offload setting to [target] and, when [target] is the active player, records it in
+     * [isOffloadActive] so the audio-effect gating stays in step with the real player state.
+     */
+    private fun applyOffload(enabled: Boolean, target: ExoPlayer) {
+        target.setOffloadEnabled(enabled)
+        if (target === player) {
+            isOffloadActive = enabled
+        }
+    }
+
     val playerVolume = MutableStateFlow(dataStore.get(PlayerVolumeKey, 1f).coerceIn(0f, 1f))
 
     // Mirrored out of DataStore once instead of read at each use site. Both are consulted from
@@ -648,8 +691,10 @@ class MusicService : MediaLibraryService(),
             AudioSettings(volume, muted, normalizeAudio, format)
         }.collectLatest(scope) { settings ->
             player.volume = if (settings.muted) 0f else settings.volume
-            isNormalizationEnabled = settings.normalizeAudio
-            applyLoudnessGain(settings.normalizeAudio, settings.format?.loudnessDb)
+            applyNormalizationGain(
+                normalizeAudio = settings.normalizeAudio,
+                loudnessDb = settings.format?.loudnessDb,
+            )
         }
 
         combine(
@@ -659,8 +704,12 @@ class MusicService : MediaLibraryService(),
             if (crossfadeEnabled) false else offloadPref
         }.distinctUntilChanged()
             .collectLatest(scope) { useOffload ->
-                player.setOffloadEnabled(useOffload)
+                applyOffload(useOffload, player)
                 secondaryPlayer?.setOffloadEnabled(useOffload)
+                // Offload was just switched on or off, so whether an effect can be attached at all
+                // just changed; re-evaluate rather than waiting for the next audio-session change.
+                initializeLoudnessEnhancer()
+                applyAudioNormalizationSettings()
             }
 
         dataStore.data
@@ -873,7 +922,11 @@ class MusicService : MediaLibraryService(),
             runBlocking {
                 val offload = dataStore.get(AudioOffload, false)
                 val crossfade = dataStore.get(CrossfadeEnabledKey, false)
-                setOffloadEnabled(if (crossfade) false else offload)
+                // This is the main player being constructed, so record the initial value here
+                // rather than through applyOffload, which only tracks the already-installed player.
+                val useOffload = if (crossfade) false else offload
+                setOffloadEnabled(useOffload)
+                isOffloadActive = useOffload
                 skipSilenceEnabled = dataStore.get(SkipSilenceKey, false)
             }
         }
@@ -898,6 +951,15 @@ class MusicService : MediaLibraryService(),
      * app on the device.
      */
     private fun initializeLoudnessEnhancer() {
+        if (!canUseAudioEffects) {
+            // Offload leaves the AudioTrack on another thread where audioflinger cannot host an
+            // effect. Attaching one anyway does not just fail to apply the gain — it makes
+            // audioflinger migrate the effect chain and recreate the output stream, which is an
+            // audible dropout. Release rather than disable: a disabled effect is still attached.
+            releaseLoudnessEnhancer()
+            return
+        }
+
         val sessionId = if (::player.isInitialized) {
             player.audioSessionId
         } else {
@@ -919,8 +981,8 @@ class MusicService : MediaLibraryService(),
             loudnessEnhancer = LoudnessEnhancer(sessionId)
             loudnessEnhancerSessionId = sessionId
             // A freshly created AudioEffect starts out enabled. Keep it inert until
-            // applyLoudnessGain() has a gain for this session, so an effect is never left running
-            // blind on a session we have not computed anything for yet.
+            // applyNormalizationGain() has a gain for this session, so an effect is never left
+            // running blind on a session we have not computed anything for yet.
             loudnessEnhancer?.enabled = false
         } catch (_: Exception) {
             releaseLoudnessEnhancer()
@@ -1171,6 +1233,12 @@ class MusicService : MediaLibraryService(),
     }
 
     private fun openAudioEffectSession() {
+        // Nothing to advertise under offload: no effect is attached, so there is no control session
+        // for the UI, and sending this still forces an effect-chain migration and a stream flush.
+        if (!canUseAudioEffects) {
+            closeAudioEffectSession()
+            return
+        }
         if (isAudioEffectSessionOpened) return
         val sessionId = player.audioSessionId
         if (sessionId == C.AUDIO_SESSION_ID_UNSET) return
@@ -1214,16 +1282,34 @@ class MusicService : MediaLibraryService(),
         scope.launch {
             val normalizeAudio = dataStore.data.first()[AudioNormalizationKey] ?: true
             val format = currentFormat.first()
-            isNormalizationEnabled = normalizeAudio
-            applyLoudnessGain(normalizeAudio, format?.loudnessDb)
+            applyNormalizationGain(normalizeAudio, format?.loudnessDb)
         }
     }
 
     /**
-     * Applies the per-track loudness gain to the enhancer, but only while it is still bound to the
+     * Applies the per-track loudness gain, by whichever mechanism the current audio path supports.
+     *
+     * Under offload this goes through [audioGainProcessor], an `AudioProcessor`, because
+     * audioflinger cannot host an `AudioEffect` on an offloaded track and rejects the attempt by
+     * recreating the output stream. Everywhere else it uses [LoudnessEnhancer], which the platform
+     * can apply without the stream churn - but only while the enhancer is still bound to the
      * session that is actually playing.
      */
-    private fun applyLoudnessGain(normalizeAudio: Boolean, loudnessDb: Double?) {
+    private fun applyNormalizationGain(normalizeAudio: Boolean, loudnessDb: Double?) {
+        isNormalizationEnabled = normalizeAudio
+        val gain = if (normalizeAudio && loudnessDb != null) {
+            (-loudnessDb * 100).toInt().coerceIn(MIN_GAIN_MB, MAX_GAIN_MB)
+        } else {
+            null
+        }
+
+        if (!canUseAudioEffects) {
+            releaseLoudnessEnhancer()
+            audioGainProcessor.targetGainDb = gain?.toFloat() ?: 0f
+            return
+        }
+
+        audioGainProcessor.targetGainDb = 0f
         val enhancer = loudnessEnhancer ?: return
         if (!::player.isInitialized || loudnessEnhancerSessionId != player.audioSessionId) {
             // The effect belongs to a session that has already been recycled; the next
@@ -1232,9 +1318,7 @@ class MusicService : MediaLibraryService(),
         }
 
         try {
-            if (normalizeAudio && loudnessDb != null) {
-                var gain = (-loudnessDb * 100).toInt()
-                gain = gain.coerceIn(MIN_GAIN_MB, MAX_GAIN_MB)
+            if (gain != null) {
                 enhancer.setTargetGain(gain)
                 enhancer.enabled = true
             } else {
@@ -1315,9 +1399,14 @@ class MusicService : MediaLibraryService(),
             )
         ) {
             scheduleCrossfade()
-            val isBufferingOrReady =
-                player.playbackState == Player.STATE_BUFFERING || player.playbackState == Player.STATE_READY
-            if (isBufferingOrReady && player.playWhenReady) {
+            // Open on genuine playback only. Treating BUFFERING as "playing" meant every rebuffer
+            // on a lossy connection could pair with a close and re-open of the effect session, and
+            // each of those broadcasts makes audioflinger migrate the effect chain and flush the
+            // output stream — an audible dropout. STATE_READY plus isPlaying only holds across a
+            // genuine play/stop, which is the one transition the session actually tracks.
+            val isEffectSessionRelevant =
+                player.playbackState == Player.STATE_READY && player.isPlaying
+            if (isEffectSessionRelevant) {
                 openAudioEffectSession()
             } else {
                 closeAudioEffectSession()
@@ -1775,7 +1864,9 @@ class MusicService : MediaLibraryService(),
                 .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                 .setAudioProcessorChain(
                     DefaultAudioSink.DefaultAudioProcessorChain(
-                        emptyArray(),
+                        // Gain first, while the stream is still the decoder's native 16-bit PCM;
+                        // SonicAudioProcessor converts to float further down.
+                        audioGainProcessor,
                         SilenceSkippingAudioProcessor(2_000_000, 0.01f, 2_000_000, 0, 256),
                         SonicAudioProcessor()
                     )
@@ -2006,6 +2097,12 @@ class MusicService : MediaLibraryService(),
         _playerFlow.value = player
         secondaryPlayer = null
 
+        // Re-derive from the player that is now primary. It was built with the crossfade rule
+        // (offload forced off), so this normally clears the flag; deriving it rather than assuming
+        // keeps the audio-effect gating correct for the new primary either way.
+        isOffloadActive = dataStore.get(AudioOffload, false) &&
+            !dataStore.get(CrossfadeEnabledKey, false)
+
         try {
             currentPlayer.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -2060,7 +2157,7 @@ class MusicService : MediaLibraryService(),
         // The incoming player owns its own AudioTrack and therefore its own audio session. media3
         // does not replay EVENT_AUDIO_SESSION_ID to listeners attached after the fact, so without
         // this the enhancer stays bound to the outgoing player's session - which cleanupCrossfade()
-        // is about to release - and applyLoudnessGain() then no-ops until the next flush or seek.
+        // is about to release - and applyNormalizationGain() then no-ops until the next flush or seek.
         initializeLoudnessEnhancer()
         applyAudioNormalizationSettings()
 
@@ -2138,7 +2235,11 @@ class MusicService : MediaLibraryService(),
         player.apply {
             runBlocking {
                 val offload = dataStore.get(AudioOffload, false)
-                setOffloadEnabled(offload)
+                val crossfade = dataStore.get(CrossfadeEnabledKey, false)
+                // Crossfade implies offload must be off, same as for the primary player. Applying
+                // the raw preference here would leave this player offloaded even though it exists
+                // to crossfade, and it becomes the primary in performCrossfadeSwap().
+                applyOffload(if (crossfade) false else offload, player)
                 skipSilenceEnabled = dataStore.get(SkipSilenceKey, false)
             }
         }
